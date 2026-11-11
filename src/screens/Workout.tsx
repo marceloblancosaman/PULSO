@@ -5,6 +5,8 @@ import { Check } from 'lucide-react'
 import { db, type Routine } from '../db/db'
 import { defaultWorkoutName, discardSession, finishSession, fmtDuration, fmtNum, previousOfRoutine, sessionStats, startSession } from '../db/logic'
 import { Dialog, Header, Screen } from '../ui'
+import posthog from '../posthog'
+import { workoutLogger } from '../logging'
 
 export const openSession = () => db.sessions.where('status').anyOf('active', 'paused').first()
 
@@ -17,7 +19,7 @@ export function useStartGuard() {
   const dialog = pending && open ? (
     <Dialog title="Tienes un entrenamiento sin terminar" body={`«${open.name}» sigue abierto. Si empiezas otro, se descartará.`} onClose={() => setPending(null)}>
       <button className="btn btn-primary" onClick={() => nav('/sesion')}>Continuar «{open.name}»</button>
-      <button className="btn btn-secondary" onClick={async () => { const f = pending; setPending(null); await f() }}>Descartar y empezar</button>
+      <button className="btn btn-secondary" onClick={async () => { const f = pending; setPending(null); posthog.capture('workout_discarded', { completed_set_count: sessionStats(open).sets, reason: 'new_workout_started' }); await f() }}>Descartar y empezar</button>
     </Dialog>
   ) : null
   return { guard, dialog }
@@ -25,6 +27,8 @@ export function useStartGuard() {
 
 export async function startRoutine(r: Routine) {
   await startSession({ routine: r, name: r.name, description: r.description })
+  posthog.capture('workout_started', { workout_type: 'routine', exercise_count: r.exerciseIds.length })
+  workoutLogger.started('routine', r.exerciseIds.length)
 }
 
 /* N1 · Nuevo entrenamiento */
@@ -33,7 +37,7 @@ export function NewWorkout() {
   const [name, setName] = useState(defaultWorkoutName())
   const [desc, setDesc] = useState('')
   const { guard, dialog } = useStartGuard()
-  const go = () => guard(async () => { await startSession({ name: name.trim() || defaultWorkoutName(), description: desc.trim() || undefined }); nav('/ejercicios?modo=sesion', { replace: true }) })
+  const go = () => guard(async () => { await startSession({ name: name.trim() || defaultWorkoutName(), description: desc.trim() || undefined }); posthog.capture('workout_started', { workout_type: 'new' }); workoutLogger.started('new'); nav('/ejercicios?modo=sesion', { replace: true }) })
   return (
     <Screen>
       <Header title="Nuevo entrenamiento" />
@@ -70,7 +74,7 @@ export function FinishWorkout() {
     <Screen>
       <Dialog title="No registraste ninguna serie" body="Esta sesión no tiene series marcadas con ✓, así que no hay nada que guardar en tu historial." onClose={() => nav('/sesion')}>
         <button className="btn btn-primary" onClick={() => nav('/sesion')}>Volver al entrenamiento</button>
-        <button className="btn btn-destructive" onClick={async () => { await discardSession(s.id); nav('/', { replace: true }) }}>Descartar sesión</button>
+        <button className="btn btn-destructive" onClick={async () => { await discardSession(s.id); posthog.capture('workout_discarded', { completed_set_count: 0 }); nav('/', { replace: true }) }}>Descartar sesión</button>
       </Dialog>
     </Screen>
   )
@@ -79,6 +83,22 @@ export function FinishWorkout() {
     setSaving(true)
     const id = s!.id
     await finishSession(id, { name: n, notes: notes.trim() || undefined })
+    const workoutType = s!.isNewRoutine ? 'new' : 'routine'
+    const durationSeconds = Math.round(st.duration / 1000)
+    posthog.capture('workout_completed', {
+      workout_type: workoutType,
+      completed_set_count: st.sets,
+      exercise_count: st.exercises,
+      duration_seconds: durationSeconds,
+      volume_kg: st.volumeKg,
+    })
+    workoutLogger.completed({
+      workoutType,
+      completedSetCount: st.sets,
+      exerciseCount: st.exercises,
+      durationSeconds,
+      volumeKg: st.volumeKg,
+    })
     nav(`/sesion/listo/${id}`, { replace: true })
   }
 

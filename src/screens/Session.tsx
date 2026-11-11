@@ -5,6 +5,7 @@ import { Check, Clock, ChevronRight, ChevronLeft, Delete, Plus, X } from 'lucide
 import { db, type Session, type SessionEntry, type Unit } from '../db/db'
 import { bestWeightKg, discardSession, elapsedMs, fmtDuration, fmtNum, getPrefs, pauseSession, resumeSession, toKg } from '../db/logic'
 import { Dialog, Segmented, Sheet, Snack, Thumb } from '../ui'
+import posthog from '../posthog'
 
 type Field = 'weight' | 'reps'
 type Editing = { set: number; field: Field; buf: string; fresh: boolean }
@@ -80,6 +81,12 @@ export default function SessionScreen() {
     if (!wasDone && !s.isNewRoutine && e.sets.every(x => x.done) && idx < entries.length - 1) currentIndex = idx + 1
     await save(entries, currentIndex)
     if (wasDone) return
+    posthog.capture('workout_set_completed', {
+      workout_type: s.isNewRoutine ? 'new' : 'routine',
+      exercise_position: idx + 1,
+      set_number: setIdx + 1,
+      is_bodyweight: bodyweight,
+    })
     const prefs = await getPrefs()
     setRest({ endsAt: Date.now() + prefs.restSeconds * 1000, total: prefs.restSeconds })
     let pr: string | undefined
@@ -255,14 +262,14 @@ export default function SessionScreen() {
         <Sheet onClose={() => setSheet(null)}>
           <div className="h3">¿Pausar o salir del entrenamiento?</div>
           <button className="btn btn-primary" onClick={() => setSheet(null)}>Continuar entrenando</button>
-          <button className="btn btn-secondary" onClick={async () => { await pauseSession(s.id); nav('/') }}>Guardar y salir</button>
+          <button className="btn btn-secondary" onClick={async () => { await pauseSession(s.id); posthog.capture('workout_paused', { completed_set_count: doneCount }); nav('/') }}>Guardar y salir</button>
           <div className="caption">Conservas tus {doneCount} series para continuar más tarde desde Inicio.</div>
           <button className="btn btn-tertiary" style={{ color: 'var(--error)' }} onClick={() => setSheet('discard')}>Descartar entrenamiento</button>
         </Sheet>
       )}
       {sheet === 'discard' && (
         <Dialog title="¿Descartar la sesión?" body={`Se eliminarán las ${doneCount} series registradas. Esta acción no se puede deshacer.`} onClose={() => setSheet(null)}>
-          <button className="btn btn-destructive" onClick={async () => { await discardSession(s.id); nav('/') }}>Descartar</button>
+          <button className="btn btn-destructive" onClick={async () => { await discardSession(s.id); posthog.capture('workout_discarded', { completed_set_count: doneCount }); nav('/') }}>Descartar</button>
           <button className="btn btn-secondary" onClick={() => setSheet(null)}>Volver</button>
         </Dialog>
       )}

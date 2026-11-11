@@ -6,6 +6,7 @@ import '@fontsource/inter/600.css'
 import './index.css'
 import App from './App.tsx'
 import { installEvent } from './screens/Profile'
+import './posthog'
 
 // Android/Chrome: guardamos el aviso de instalación para lanzarlo desde «Instalar PULSO».
 window.addEventListener('beforeinstallprompt', e => {

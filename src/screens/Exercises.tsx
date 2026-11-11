@@ -6,6 +6,7 @@ import { db, type Equipment, type Muscle, type Unit } from '../db/db'
 import { MUSCLES, EQUIPMENT } from '../db/catalog'
 import { addExerciseToSession, createCustomExercise, getPrefs, searchExercises } from '../db/logic'
 import { EmptyState, Header, Screen, Segmented, Thumb } from '../ui'
+import posthog from '../posthog'
 
 const openSession = () => db.sessions.where('status').anyOf('active', 'paused').first()
 
@@ -29,7 +30,7 @@ export function ExercisePicker() {
   const hasCustom = (all ?? []).some(e => e.custom)
 
   async function pick(id: string) {
-    if (forSession && session) { await addExerciseToSession(session.id, id); nav('/sesion', { replace: true }) }
+    if (forSession && session) { await addExerciseToSession(session.id, id); posthog.capture('exercise_added_to_workout', { source: 'picker' }); nav('/sesion', { replace: true }) }
     else nav(`/ejercicios/${id}`)
   }
   const createHref = `/ejercicios/nuevo?${forSession ? 'modo=sesion&' : ''}nombre=${encodeURIComponent(q)}`
@@ -90,7 +91,7 @@ export function ExerciseDetail() {
         </div>
       )}
       <div className="spacer" />
-      {session && !inSession && <button className="btn btn-primary" onClick={async () => { await addExerciseToSession(session.id, ex.id); nav('/sesion') }}>Añadir al entrenamiento</button>}
+      {session && !inSession && <button className="btn btn-primary" onClick={async () => { await addExerciseToSession(session.id, ex.id); posthog.capture('exercise_added_to_workout', { source: 'detail' }); nav('/sesion') }}>Añadir al entrenamiento</button>}
       {session && inSession && <button className="btn btn-secondary" onClick={() => nav('/sesion')}>Volver al entrenamiento</button>}
     </Screen>
   )
@@ -112,6 +113,7 @@ export function CreateExercise() {
   async function saveIt() {
     if (!valid) return
     const ex = await createCustomExercise({ name: name.trim(), muscle: muscle!, equipment: equipment!, defaultUnit: u })
+    posthog.capture('custom_exercise_created', { muscle, equipment, unit: u, added_to_workout: forSession })
     const s = await openSession()
     if (forSession && s) { await addExerciseToSession(s.id, ex.id); nav('/sesion', { replace: true }) }
     else nav(`/ejercicios/${ex.id}`, { replace: true })

@@ -5,6 +5,7 @@ import { ChevronRight, Download, EllipsisVertical, Minus, Plus, Share, SquarePlu
 import { db } from '../db/db'
 import { getPrefs, setPref } from '../db/logic'
 import { Dialog, Header, Screen, Segmented } from '../ui'
+import posthog from '../posthog'
 
 /* 41 · Perfil */
 export function Profile() {
@@ -87,7 +88,7 @@ export function Install() {
   async function install() {
     const e = installEvent.current
     if (!e) return
-    await e.prompt(); const r = await e.userChoice; installEvent.current = null; setCanInstall(false); if (r.outcome === 'accepted') skip()
+    await e.prompt(); const r = await e.userChoice; installEvent.current = null; setCanInstall(false); if (r.outcome === 'accepted') { posthog.capture('app_install_completed'); skip() }
   }
   return (
     <Screen>
@@ -128,7 +129,7 @@ export function Welcome() {
         <label htmlFor="nm">¿Cómo te llamas?</label>
         <input id="nm" className="input" value={name} onChange={e => setName(e.target.value)} placeholder="Tu nombre" autoComplete="given-name" />
       </div>
-      <button className="btn btn-primary" disabled={!name.trim()} onClick={async () => { await setPref('name', name.trim()); nav('/', { replace: true }) }}>Empezar</button>
+      <button className="btn btn-primary" disabled={!name.trim()} onClick={async () => { await setPref('name', name.trim()); posthog.capture('onboarding_completed'); nav('/', { replace: true }) }}>Empezar</button>
     </Screen>
   )
 }
