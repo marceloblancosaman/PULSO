@@ -5,6 +5,7 @@ import { Check } from 'lucide-react'
 import { db, type Routine } from '../db/db'
 import { defaultWorkoutName, discardSession, finishSession, fmtDuration, fmtNum, previousOfRoutine, sessionStats, startSession } from '../db/logic'
 import { Dialog, Header, Screen } from '../ui'
+import { track } from '../analytics'
 
 export const openSession = () => db.sessions.where('status').anyOf('active', 'paused').first()
 
@@ -24,6 +25,7 @@ export function useStartGuard() {
 }
 
 export async function startRoutine(r: Routine) {
+  track('session_started', { mode: 'routine', exercises: r.exerciseIds.length })
   await startSession({ routine: r, name: r.name, description: r.description })
 }
 
@@ -33,7 +35,7 @@ export function NewWorkout() {
   const [name, setName] = useState(defaultWorkoutName())
   const [desc, setDesc] = useState('')
   const { guard, dialog } = useStartGuard()
-  const go = () => guard(async () => { await startSession({ name: name.trim() || defaultWorkoutName(), description: desc.trim() || undefined }); nav('/ejercicios?modo=sesion', { replace: true }) })
+  const go = () => guard(async () => { track('session_started', { mode: 'new', name_changed: name !== defaultWorkoutName() }); await startSession({ name: name.trim() || defaultWorkoutName(), description: desc.trim() || undefined }); nav('/ejercicios?modo=sesion', { replace: true }) })
   return (
     <Screen>
       <Header title="Nuevo entrenamiento" />
@@ -70,7 +72,7 @@ export function FinishWorkout() {
     <Screen>
       <Dialog title="No registraste ninguna serie" body="Esta sesión no tiene series marcadas con ✓, así que no hay nada que guardar en tu historial." onClose={() => nav('/sesion')}>
         <button className="btn btn-primary" onClick={() => nav('/sesion')}>Volver al entrenamiento</button>
-        <button className="btn btn-destructive" onClick={async () => { await discardSession(s.id); nav('/', { replace: true }) }}>Descartar sesión</button>
+        <button className="btn btn-destructive" onClick={async () => { track('session_discarded', { sets_done: 0, where: 'finish_no_sets' }); await discardSession(s.id); nav('/', { replace: true }) }}>Descartar sesión</button>
       </Dialog>
     </Screen>
   )
@@ -78,6 +80,7 @@ export function FinishWorkout() {
   async function save() {
     setSaving(true)
     const id = s!.id
+    track('session_finished', { duration_s: Math.round(st.duration / 1000), sets: st.sets, total_sets: st.total, exercises: st.exercises, is_new_routine: s!.isNewRoutine, completion: st.total ? Math.round((st.sets / st.total) * 100) : null, has_notes: !!notes.trim(), routine_renamed: s!.isNewRoutine && n !== s!.name })
     await finishSession(id, { name: n, notes: notes.trim() || undefined })
     nav(`/sesion/listo/${id}`, { replace: true })
   }
@@ -111,6 +114,28 @@ export function FinishWorkout() {
 }
 
 /* 36 / 36b · Entrenamiento finalizado */
+function QuickFeedback({ sessionId, isNew }: { sessionId: string; isNew: boolean }) {
+  const [rating, setRating] = useState<number | null>(null)
+  const [comment, setComment] = useState('')
+  const [sent, setSent] = useState(false)
+  if (sent) return <div className="card-brand body" style={{ color: 'var(--text-primary)' }}>¡Gracias! Tu respuesta ayuda a mejorar PULSO.</div>
+  return (
+    <div className="card stack" style={{ gap: 12 }}>
+      <div className="title" style={{ fontWeight: 600 }}>¿Qué tan fácil fue registrar tus series?</div>
+      <div className="row" style={{ gap: 8 }}>
+        {[1, 2, 3, 4, 5].map(n => (
+          <button key={n} className={`chip ${rating === n ? 'on' : ''}`} style={{ flex: 1, justifyContent: 'center', padding: 0 }} onClick={() => setRating(n)}>{n}</button>
+        ))}
+      </div>
+      <div className="row caption" style={{ justifyContent: 'space-between', fontWeight: 400 }}><span>Muy difícil</span><span>Muy fácil</span></div>
+      {rating !== null && (<>
+        <textarea className="input" style={{ height: 80 }} value={comment} onChange={e => setComment(e.target.value)} placeholder={rating <= 3 ? '¿Qué te costó más? (opcional)' : '¿Algo que mejorarías? (opcional)'} />
+        <button className="btn btn-secondary" onClick={() => { track('feedback_submitted', { context: 'after_workout', rating, comment: comment.trim() || null, session_id: sessionId, is_new_routine: isNew }); setSent(true) }}>Enviar</button>
+      </>)}
+    </div>
+  )
+}
+
 export function WorkoutDone() {
   const { id } = useParams()
   const nav = useNavigate()
@@ -139,6 +164,7 @@ export function WorkoutDone() {
           <div className="caption" style={{ fontWeight: 400 }}>Solo comparamos sesiones de la misma rutina.</div>
         </div>
       )}
+      <QuickFeedback sessionId={s.id} isNew={s.isNewRoutine} />
       <div className="spacer" />
       <button className="btn btn-primary" onClick={() => nav('/', { replace: true })}>Volver al inicio</button>
       <button className="btn btn-secondary" onClick={() => nav(`/historial/${s.id}`, { replace: true })}>Ver en el historial</button>

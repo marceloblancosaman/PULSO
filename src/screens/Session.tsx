@@ -5,6 +5,7 @@ import { Check, Clock, ChevronRight, ChevronLeft, Delete, Plus, X } from 'lucide
 import { db, type Session, type SessionEntry, type Unit } from '../db/db'
 import { bestWeightKg, discardSession, elapsedMs, fmtDuration, fmtNum, getPrefs, pauseSession, resumeSession, toKg } from '../db/logic'
 import { Dialog, Segmented, Sheet, Snack, Thumb } from '../ui'
+import { track } from '../analytics'
 
 type Field = 'weight' | 'reps'
 type Editing = { set: number; field: Field; buf: string; fresh: boolean }
@@ -29,7 +30,7 @@ export default function SessionScreen() {
   useEffect(() => { const t = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(t) }, [])
 
   // Al volver a una sesión pausada, se reanuda.
-  useEffect(() => { if (session?.status === 'paused') resumeSession(session.id) }, [session?.id, session?.status])
+  useEffect(() => { if (session?.status === 'paused') { track('session_resumed'); resumeSession(session.id) } }, [session?.id, session?.status])
 
   // El descanso sobrevive a recargar la página.
   useEffect(() => {
@@ -63,7 +64,7 @@ export default function SessionScreen() {
     const entries = clone(s.entries); fn(entries[idx]); return save(entries, opts?.currentIndex)
   }
 
-  async function complete(setIdx: number, values?: Partial<Record<Field, number | null>>) {
+  async function complete(setIdx: number, values?: Partial<Record<Field, number | null>>, method: 'row_check' | 'keypad' = 'row_check') {
     const before = { entries: clone(s.entries), currentIndex: s.currentIndex }
     const entries = clone(s.entries)
     const e = entries[idx]
@@ -89,20 +90,24 @@ export default function SessionScreen() {
       const kg = toKg(st.weight, e.unit)
       if (best > 0 && kg > best && kg > Math.max(0, ...doneHere)) pr = `Nueva marca: ${fmtNum(st.weight)} ${e.unit} × ${st.reps ?? '—'}`
     }
+    track('set_completed', { method, set_index: setIdx + 1, unit: e.unit, is_pr: !!pr, prefilled_from_history: e.previous.length > setIdx, is_new_routine: s.isNewRoutine, exercise: ex?.name })
     setSnack({ title: `Serie ${setIdx + 1} registrada`, pr, undo: before })
   }
 
   async function uncomplete(setIdx: number) {
+    track('set_unchecked', { set_index: setIdx + 1 })
     await updateEntry(e => { e.sets[setIdx].done = false; delete e.sets[setIdx].doneAt })
   }
 
   async function undo() {
     if (!snack) return
+    track('set_undone')
     await save(snack.undo.entries, snack.undo.currentIndex)
     setRest(null); setSnack(null)
   }
 
   function openKeypad(setIdx: number, field: Field) {
+    track('keypad_opened', { field, set_done: entry.sets[setIdx].done })
     setEditing({ set: setIdx, field, buf: '', fresh: true })
   }
 
@@ -133,12 +138,12 @@ export default function SessionScreen() {
       setEditing({ set: editing.set, field: other, buf: '', fresh: true })
       return
     }
-    await complete(editing.set, { [editing.field]: value })
+    await complete(editing.set, { [editing.field]: value }, 'keypad')
   }
 
-  const addSet = () => updateEntry(e => { const last = e.sets[e.sets.length - 1]; e.sets.push({ weight: last?.weight ?? null, reps: last?.reps ?? null, done: false }) })
-  const removeLastSet = () => updateEntry(e => { if (e.sets.length > 1 && !e.sets[e.sets.length - 1].done) e.sets.pop() })
-  const setUnit = (u: Unit) => updateEntry(e => { e.unit = u })
+  const addSet = () => { track('set_added'); return updateEntry(e => { const last = e.sets[e.sets.length - 1]; e.sets.push({ weight: last?.weight ?? null, reps: last?.reps ?? null, done: false }) }) }
+  const removeLastSet = () => { track('set_removed'); return updateEntry(e => { if (e.sets.length > 1 && !e.sets[e.sets.length - 1].done) e.sets.pop() }) }
+  const setUnit = (u: Unit) => { if (u !== entry.unit) track('unit_changed', { to: u, exercise: ex?.name }); return updateEntry(e => { e.unit = u }) }
   const goTo = (i: number) => save(s.entries, i)
 
   const prevText = (i: number) => { const p = entry.previous[i]; return p ? `${fmtNum(p.weight) || '—'}${p.weight !== null ? ` ${entry.unit}` : ''} × ${p.reps ?? '—'}` : '—' }
@@ -173,8 +178,8 @@ export default function SessionScreen() {
           <div className="rest">
             <div><div className="overline">Descanso</div><div className="time">{fmtDuration(restLeft)}</div></div>
             <div className="track"><div style={{ width: `${(restLeft / (rest.total * 1000)) * 100}%` }} /></div>
-            <button className="pill pill-outline" onClick={() => setRest(r => r && { endsAt: r.endsAt + 30000, total: r.total + 30 })}>+30 s</button>
-            <button className="pill pill-solid" onClick={() => setRest(null)}>Saltar</button>
+            <button className="pill pill-outline" onClick={() => { track('rest_extended'); setRest(r => r && { endsAt: r.endsAt + 30000, total: r.total + 30 }) }}>+30 s</button>
+            <button className="pill pill-solid" onClick={() => { track('rest_skipped', { seconds_left: Math.round(restLeft / 1000) }); setRest(null) }}>Saltar</button>
           </div>
         )}
 
@@ -221,7 +226,7 @@ export default function SessionScreen() {
 
         <div className="spacer" />
         {s.isNewRoutine
-          ? <button className="btn btn-primary" disabled={!entryHasDone} onClick={() => setSheet('saved')}>Guardar ejercicio</button>
+          ? <button className="btn btn-primary" disabled={!entryHasDone} onClick={() => { track('exercise_saved', { exercise: ex?.name, sets: entry.sets.filter(x => x.done).length }); setSheet('saved') }}>Guardar ejercicio</button>
           : <button className="btn btn-secondary" onClick={() => nav('/sesion/terminar')}>Finalizar entrenamiento</button>}
         {s.isNewRoutine && !entryHasDone && <div className="caption" style={{ textAlign: 'center' }}>Registra al menos una serie para guardarlo.</div>}
       </div>
@@ -255,14 +260,14 @@ export default function SessionScreen() {
         <Sheet onClose={() => setSheet(null)}>
           <div className="h3">¿Pausar o salir del entrenamiento?</div>
           <button className="btn btn-primary" onClick={() => setSheet(null)}>Continuar entrenando</button>
-          <button className="btn btn-secondary" onClick={async () => { await pauseSession(s.id); nav('/') }}>Guardar y salir</button>
+          <button className="btn btn-secondary" onClick={async () => { track('session_paused', { sets_done: doneCount }); await pauseSession(s.id); nav('/') }}>Guardar y salir</button>
           <div className="caption">Conservas tus {doneCount} series para continuar más tarde desde Inicio.</div>
           <button className="btn btn-tertiary" style={{ color: 'var(--error)' }} onClick={() => setSheet('discard')}>Descartar entrenamiento</button>
         </Sheet>
       )}
       {sheet === 'discard' && (
         <Dialog title="¿Descartar la sesión?" body={`Se eliminarán las ${doneCount} series registradas. Esta acción no se puede deshacer.`} onClose={() => setSheet(null)}>
-          <button className="btn btn-destructive" onClick={async () => { await discardSession(s.id); nav('/') }}>Descartar</button>
+          <button className="btn btn-destructive" onClick={async () => { track('session_discarded', { sets_done: doneCount, where: 'session' }); await discardSession(s.id); nav('/') }}>Descartar</button>
           <button className="btn btn-secondary" onClick={() => setSheet(null)}>Volver</button>
         </Dialog>
       )}

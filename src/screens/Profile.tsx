@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useLiveQuery } from 'dexie-react-hooks'
-import { ChevronRight, Download, EllipsisVertical, Minus, Plus, Share, SquarePlus, Smartphone, Trash2 } from 'lucide-react'
+import { ChevronRight, Download, MessageSquare, EllipsisVertical, Minus, Plus, Share, SquarePlus, Smartphone, Trash2 } from 'lucide-react'
 import { db } from '../db/db'
 import { getPrefs, setPref } from '../db/logic'
-import { Dialog, Header, Screen, Segmented } from '../ui'
+import { Dialog, Header, Screen, Segmented, Snack } from '../ui'
+import { identifyName, track } from '../analytics'
 
 /* 41 · Perfil */
 export function Profile() {
@@ -12,6 +13,8 @@ export function Profile() {
   const prefs = useLiveQuery(getPrefs, [])
   const [edit, setEdit] = useState<string | null>(null)
   const [wipe, setWipe] = useState(false)
+  const [fb, setFb] = useState<string | null>(null)
+  const [thanks, setThanks] = useState(false)
   if (!prefs) return <Screen nav>{null}</Screen>
   return (
     <Screen nav>
@@ -21,6 +24,7 @@ export function Profile() {
         <div style={{ flex: 1 }}><div className="title" style={{ fontWeight: 600 }}>{prefs.name || 'Sin nombre'}</div><div className="label" style={{ fontWeight: 400 }}>Toca para cambiar tu nombre</div></div>
       </button>
       <div className="stack" style={{ gap: 8 }}>
+        <button className="settings-row" style={{ borderColor: 'var(--brand)' }} onClick={() => setFb('')}><MessageSquare size={18} className="brand" /><span className="grow">Enviar un comentario</span><ChevronRight size={18} className="muted" /></button>
         <button className="settings-row" onClick={() => nav('/perfil/preferencias')}><span className="grow">Preferencias de entrenamiento</span><span className="muted">{prefs.unit} · {prefs.restSeconds} s</span><ChevronRight size={18} className="muted" /></button>
         <button className="settings-row" onClick={() => nav('/historial')}><span className="grow">Historial</span><ChevronRight size={18} className="muted" /></button>
         <button className="settings-row" onClick={() => nav('/ejercicios')}><span className="grow">Catálogo de ejercicios</span><ChevronRight size={18} className="muted" /></button>
@@ -32,9 +36,16 @@ export function Profile() {
       {edit !== null && (
         <Dialog title="Tu nombre" onClose={() => setEdit(null)}>
           <input className="input" value={edit} onChange={e => setEdit(e.target.value)} autoFocus />
-          <button className="btn btn-primary" onClick={async () => { await setPref('name', edit.trim()); setEdit(null) }}>Guardar</button>
+          <button className="btn btn-primary" onClick={async () => { await setPref('name', edit.trim()); identifyName(edit.trim()); setEdit(null) }}>Guardar</button>
         </Dialog>
       )}
+      {fb !== null && (
+        <Dialog title="Tu comentario" body="¿Algo que no funcionó, te confundió o te gustaría tener? Todo sirve." onClose={() => setFb(null)}>
+          <textarea className="input" value={fb} onChange={e => setFb(e.target.value)} placeholder="Escribe aquí…" autoFocus />
+          <button className="btn btn-primary" disabled={!fb.trim()} onClick={() => { track('feedback_submitted', { context: 'profile', comment: fb.trim() }); setFb(null); setThanks(true) }}>Enviar</button>
+        </Dialog>
+      )}
+      {thanks && <Snack onTimeout={() => setThanks(false)} ms={3000} raised><div style={{ fontWeight: 600, fontSize: 14 }}>¡Gracias por tu comentario!</div></Snack>}
       {wipe && (
         <Dialog title="¿Borrar todos tus datos?" body="Se eliminarán tus rutinas, tu historial y tus ejercicios propios de este teléfono. Esta acción no se puede deshacer." onClose={() => setWipe(false)}>
           <button className="btn btn-destructive" onClick={async () => { await db.delete(); location.href = '/' }}>Borrar todo</button>
@@ -83,11 +94,11 @@ export function Install() {
   const steps = os === 'ios'
     ? [[<Share size={20} />, 'Toca el botón Compartir', 'Abajo en Safari, el cuadrado con la flecha.'], [<SquarePlus size={20} />, 'Elige «Agregar a inicio»', 'Desliza el menú si no lo ves.'], [<Smartphone size={20} />, 'Abre PULSO desde su ícono', 'Ya no necesitas Safari para usarla.']]
     : [[<Download size={20} />, 'Toca «Instalar PULSO»', 'O en el menú ⋮ de Chrome, «Instalar app».'], [<EllipsisVertical size={20} />, 'Confirma en el aviso', 'Se agregará a tu pantalla de inicio.'], [<Smartphone size={20} />, 'Abre PULSO desde su ícono', 'Funciona como cualquier otra app.']]
-  async function skip() { await setPref('installDismissed', true); nav('/', { replace: true }) }
+  async function skip(accepted = false) { track(accepted ? 'install_accepted' : 'install_skipped', { os }); await setPref('installDismissed', true); nav('/', { replace: true }) }
   async function install() {
     const e = installEvent.current
     if (!e) return
-    await e.prompt(); const r = await e.userChoice; installEvent.current = null; setCanInstall(false); if (r.outcome === 'accepted') skip()
+    await e.prompt(); const r = await e.userChoice; installEvent.current = null; setCanInstall(false); if (r.outcome === 'accepted') skip(true)
   }
   return (
     <Screen>
@@ -107,7 +118,7 @@ export function Install() {
       </div>
       <div className="spacer" />
       {os === 'android' && canInstall && <button className="btn btn-primary" onClick={install}>Instalar PULSO</button>}
-      <button className="btn btn-tertiary" onClick={skip}>Seguir en el navegador</button>
+      <button className="btn btn-tertiary" onClick={() => skip()}>Seguir en el navegador</button>
     </Screen>
   )
 }
@@ -128,7 +139,8 @@ export function Welcome() {
         <label htmlFor="nm">¿Cómo te llamas?</label>
         <input id="nm" className="input" value={name} onChange={e => setName(e.target.value)} placeholder="Tu nombre" autoComplete="given-name" />
       </div>
-      <button className="btn btn-primary" disabled={!name.trim()} onClick={async () => { await setPref('name', name.trim()); nav('/', { replace: true }) }}>Empezar</button>
+      <button className="btn btn-primary" disabled={!name.trim()} onClick={async () => { await setPref('name', name.trim()); identifyName(name.trim()); nav('/', { replace: true }) }}>Empezar</button>
+      <div className="caption" style={{ fontWeight: 400, textAlign: 'center' }}>PULSO registra de forma anónima cómo usas la app para mejorarla.</div>
     </Screen>
   )
 }

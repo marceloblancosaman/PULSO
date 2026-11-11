@@ -6,6 +6,7 @@ import { db, type Routine, type Session } from '../db/db'
 import { discardSession, fmtDate, fmtDuration, fmtNum, getPrefs, lastPerformance, sessionStats } from '../db/logic'
 import { Dialog, EmptyState, Header, Screen, Sheet, Thumb } from '../ui'
 import { openSession, startRoutine, useStartGuard } from './Workout'
+import { track } from '../analytics'
 
 function ago(t?: number) {
   if (!t) return 'sin usar'
@@ -34,7 +35,7 @@ function OpenSessionCard({ s }: { s: Session }) {
       </div>
       {confirm && (
         <Dialog title="¿Descartar la sesión?" body={`Se eliminarán las ${st.sets} series registradas. Esta acción no se puede deshacer.`} onClose={() => setConfirm(false)}>
-          <button className="btn btn-destructive" onClick={() => discardSession(s.id)}>Descartar</button>
+          <button className="btn btn-destructive" onClick={() => { track('session_discarded', { sets_done: st.sets, where: 'home' }); discardSession(s.id) }}>Descartar</button>
           <button className="btn btn-secondary" onClick={() => setConfirm(false)}>Volver</button>
         </Dialog>
       )}

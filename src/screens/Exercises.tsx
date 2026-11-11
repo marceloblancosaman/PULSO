@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { Check, ChevronRight, Plus, Search, SearchX } from 'lucide-react'
@@ -6,6 +6,7 @@ import { db, type Equipment, type Muscle, type Unit } from '../db/db'
 import { MUSCLES, EQUIPMENT } from '../db/catalog'
 import { addExerciseToSession, createCustomExercise, getPrefs, searchExercises } from '../db/logic'
 import { EmptyState, Header, Screen, Segmented, Thumb } from '../ui'
+import { track } from '../analytics'
 
 const openSession = () => db.sessions.where('status').anyOf('active', 'paused').first()
 
@@ -28,8 +29,12 @@ export function ExercisePicker() {
   const inSession = new Set(session?.entries.map(e => e.exerciseId) ?? [])
   const hasCustom = (all ?? []).some(e => e.custom)
 
+  useEffect(() => { if (q.trim().length >= 3 && list.length === 0) { const t = setTimeout(() => track('search_no_results', { query: q.trim() }), 1200); return () => clearTimeout(t) } }, [q, list.length])
+
   async function pick(id: string) {
-    if (forSession && session) { await addExerciseToSession(session.id, id); nav('/sesion', { replace: true }) }
+    if (forSession && session) {
+      track('exercise_added', { source: 'catalog', used_search: !!q.trim(), filter: muscle, custom: !!all?.find(e => e.id === id)?.custom })
+      await addExerciseToSession(session.id, id); nav('/sesion', { replace: true }) }
     else nav(`/ejercicios/${id}`)
   }
   const createHref = `/ejercicios/nuevo?${forSession ? 'modo=sesion&' : ''}nombre=${encodeURIComponent(q)}`
@@ -112,6 +117,7 @@ export function CreateExercise() {
   async function saveIt() {
     if (!valid) return
     const ex = await createCustomExercise({ name: name.trim(), muscle: muscle!, equipment: equipment!, defaultUnit: u })
+    track('custom_exercise_created', { name: ex.name, muscle: ex.muscle, equipment: ex.equipment, unit: u, during_session: forSession })
     const s = await openSession()
     if (forSession && s) { await addExerciseToSession(s.id, ex.id); nav('/sesion', { replace: true }) }
     else nav(`/ejercicios/${ex.id}`, { replace: true })

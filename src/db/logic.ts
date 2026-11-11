@@ -8,7 +8,7 @@ export async function ensureSeed() {
 }
 
 /* ---------- Preferencias ---------- */
-export type Prefs = { name: string; unit: Unit; restSeconds: number; installDismissed: boolean }
+export type Prefs = { name: string; unit: Unit; restSeconds: number; installDismissed: boolean; deviceId?: string }
 export const DEFAULT_PREFS: Prefs = { name: '', unit: 'kg', restSeconds: 90, installDismissed: false }
 
 export async function getPrefs(): Promise<Prefs> {
