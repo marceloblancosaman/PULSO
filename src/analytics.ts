@@ -36,7 +36,8 @@ export type EventName =
   | 'session_started' | 'session_paused' | 'session_resumed' | 'session_discarded' | 'session_finished'
   | 'exercise_added' | 'exercise_saved' | 'custom_exercise_created' | 'search_no_results'
   | 'keypad_opened' | 'set_completed' | 'set_unchecked' | 'set_undone' | 'set_added' | 'set_removed'
-  | 'unit_changed' | 'rest_skipped' | 'rest_extended'
+  | 'unit_changed' | 'rest_skipped' | 'rest_extended' | 'rest_recovered'
+  | 'session_renamed' | 'template_started' | 'hold_started' | 'hold_finished' | 'hold_cancelled'
   | 'feedback_submitted'
 
 export function track(event: EventName, props?: Record<string, unknown>) {

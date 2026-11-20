@@ -1,7 +1,10 @@
 import { useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { useLiveQuery } from 'dexie-react-hooks'
-import { ChevronRight, Dumbbell, MoreHorizontal, Pencil, Trash2 } from 'lucide-react'
+import { ChevronRight, Dumbbell, MoreHorizontal, Pencil, Sparkles, Trash2 } from 'lucide-react'
+import { TEMPLATES, type Template } from '../db/catalog'
+import type { Exercise } from '../db/db'
+import { startSession } from '../db/logic'
 import { db, type Routine, type Session } from '../db/db'
 import { discardSession, fmtDate, fmtDuration, fmtNum, getPrefs, lastPerformance, sessionStats } from '../db/logic'
 import { Dialog, EmptyState, Header, Screen, Sheet, Thumb } from '../ui'
@@ -76,14 +79,15 @@ export function Home() {
       </div>
       {open && <OpenSessionCard s={open} />}
 
-      {routines.length === 0 && !open ? (
+      {routines.length === 0 && !open ? (<>
         <div className="card" style={{ paddingTop: 24 }}>
           <EmptyState icon={<Dumbbell size={32} />} title="Todavía no hay rutinas" body="Empieza a entrenar y tu rutina se arma sola con los ejercicios que hagas.">
             <button className="btn btn-primary" onClick={() => nav('/nuevo')}>Empezar entrenamiento</button>
             <button className="btn btn-tertiary" onClick={() => nav('/ejercicios')}>Explorar ejercicios</button>
           </EmptyState>
         </div>
-      ) : (<>
+        <TemplateList title="¿No sabes por dónde empezar?" />
+      </>) : (<>
         {!open && next && (
           <div className="card" style={{ background: 'linear-gradient(135deg, #10302f 0%, #131a1c 70%)', borderRadius: 20, padding: 20 }}>
             <div className="overline brand">Tu última rutina</div>
@@ -121,6 +125,7 @@ export function Routines() {
       )}
       {routines?.map(r => <RoutineCard key={r.id} r={r} />)}
       <button className="btn btn-primary" onClick={() => nav('/nuevo')}>Empezar entrenamiento</button>
+      <TemplateList />
     </Screen>
   )
 }
@@ -136,6 +141,7 @@ export function Train() {
       {open && <OpenSessionCard s={open} />}
       {routines?.map(r => <RoutineCard key={r.id} r={r} />)}
       <button className="btn btn-primary" onClick={() => nav('/nuevo')}>Empezar entrenamiento nuevo</button>
+      <TemplateList />
     </Screen>
   )
 }
@@ -152,7 +158,8 @@ export function RoutineDetail() {
       const last = await lastPerformance(r.exerciseIds[i])
       const reps = last?.sets.map(s => s.reps).filter(Boolean) as number[] | undefined
       const top = last?.sets.reduce((m, s) => Math.max(m, s.weight ?? 0), 0)
-      return { id: r.exerciseIds[i], name: e?.name ?? 'Ejercicio', meta: last ? `${last.sets.length} × ${reps?.length ? (Math.min(...reps) === Math.max(...reps) ? reps[0] : `${Math.min(...reps)}–${Math.max(...reps)}`) : '—'}${top ? ` · ${fmtNum(top)} ${last.unit}` : ''}` : 'Sin registros' }
+      const unit = e?.measure === 'time' ? ' s' : ''
+      return { id: r.exerciseIds[i], ex: e, name: e?.name ?? 'Ejercicio', meta: last ? `${last.sets.length} × ${reps?.length ? (Math.min(...reps) === Math.max(...reps) ? reps[0] : `${Math.min(...reps)}–${Math.max(...reps)}`) : '—'}${unit}${top ? ` · ${fmtNum(top)} ${last.unit}` : ''}` : 'Sin registros' }
     }))
   }, [r])
   const [menu, setMenu] = useState<null | 'menu' | 'rename' | 'delete'>(null)
@@ -168,7 +175,7 @@ export function RoutineDetail() {
       <div className="card stack" style={{ gap: 0, padding: '4px 16px' }}>
         {rows?.map((x, i) => (
           <button key={x.id} className="row" style={{ padding: '12px 0', borderTop: i ? '1px solid var(--border)' : 0, textAlign: 'left' }} onClick={() => nav(`/ejercicios/${x.id}`)}>
-            <Thumb /><div style={{ flex: 1 }}><div className="title">{x.name}</div><div className="caption" style={{ fontWeight: 400 }}>{x.meta}</div></div>
+            <Thumb ex={x.ex} /><div style={{ flex: 1 }}><div className="title">{x.name}</div><div className="caption" style={{ fontWeight: 400 }}>{x.meta}</div></div>
           </button>
         ))}
       </div>
@@ -201,3 +208,44 @@ export function RoutineDetail() {
   )
 }
 
+
+/* Rutinas sugeridas */
+export function TemplateList({ title = 'Rutinas sugeridas' }: { title?: string }) {
+  const nav = useNavigate()
+  return (<>
+    <div className="row" style={{ gap: 8, marginTop: 4 }}><Sparkles size={16} className="brand" /><div className="title" style={{ fontWeight: 600 }}>{title}</div></div>
+    {TEMPLATES.map(t => (
+      <button key={t.id} className="list-card" onClick={() => nav(`/sugeridas/${t.id}`)}>
+        <div className="grow"><div className="name">{t.name}</div><div className="meta">{t.items.length} ejercicios · {t.description}</div></div>
+        <ChevronRight size={20} className="muted" />
+      </button>
+    ))}
+  </>)
+}
+
+export function TemplateDetail() {
+  const { id } = useParams()
+  const nav = useNavigate()
+  const t: Template | undefined = TEMPLATES.find(x => x.id === id)
+  const exs = useLiveQuery(async () => (t ? (await db.exercises.bulkGet(t.items.map(i => i.exerciseId))) : []), [id])
+  const { guard, dialog } = useStartGuard()
+  if (!t) return <Screen><Header /><div className="body">No encontramos esa rutina.</div></Screen>
+  return (
+    <Screen>
+      <Header title="Rutina sugerida" />
+      <div><div className="h2">{t.name}</div><div className="body" style={{ marginTop: 4 }}>{t.description}</div></div>
+      <div className="card stack" style={{ gap: 0, padding: '4px 16px' }}>
+        {t.items.map((it, i) => { const e = exs?.[i] as Exercise | undefined; return (
+          <button key={it.exerciseId} className="row" style={{ padding: '12px 0', borderTop: i ? '1px solid var(--border)' : 0, textAlign: 'left' }} onClick={() => nav(`/ejercicios/${it.exerciseId}`)}>
+            <Thumb ex={e} /><div style={{ flex: 1 }}><div className="title">{e?.name ?? 'Ejercicio'}</div>
+              <div className="caption" style={{ fontWeight: 400 }}>{it.sets} × {it.reps}{e?.measure === 'time' ? ' s' : ''}{e?.unilateral ? ' por lado' : ''}</div></div>
+          </button>
+        ) })}
+      </div>
+      <div className="caption" style={{ fontWeight: 400 }}>Al terminar se guarda como rutina tuya: puedes cambiarle el nombre y repetirla con tu historial.</div>
+      <div className="spacer" />
+      <button className="btn btn-primary" onClick={() => guard(async () => { track('template_started', { template: t.id }); await startSession({ template: t, name: t.name, description: t.description }); nav('/sesion') })}>Empezar</button>
+      {dialog}
+    </Screen>
+  )
+}

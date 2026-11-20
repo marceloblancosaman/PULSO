@@ -1,5 +1,5 @@
 import { db, uid, type Exercise, type Session, type SessionEntry, type Unit, type Routine } from './db'
-import { CATALOG } from './catalog'
+import { CATALOG, type Template } from './catalog'
 
 /* ---------- Arranque ---------- */
 export async function ensureSeed() {
@@ -67,7 +67,7 @@ export async function lastPerformance(exerciseId: string, excludeSessionId?: str
     if (s.id === excludeSessionId) continue
     const e = s.entries.find(x => x.exerciseId === exerciseId)
     const done = e?.sets.filter(x => x.done) ?? []
-    if (e && done.length) return { unit: e.unit, sets: done.map(x => ({ weight: x.weight, reps: x.reps })), sessionId: s.id }
+    if (e && done.length) return { unit: e.unit, sets: done.map(x => ({ weight: x.weight, reps: x.reps, repsR: x.repsR ?? null })), sessionId: s.id }
   }
   return null
 }
@@ -84,21 +84,28 @@ export async function bestWeightKg(exerciseId: string, excludeSessionId?: string
 }
 
 /* ---------- Sesiones ---------- */
-export async function buildEntry(exerciseId: string): Promise<SessionEntry> {
+export async function buildEntry(exerciseId: string, suggest?: { sets: number; reps: number }): Promise<SessionEntry> {
   const [ex, prefs, last] = await Promise.all([db.exercises.get(exerciseId), getPrefs(), lastPerformance(exerciseId)])
   const unit: Unit = last?.unit ?? ex?.defaultUnit ?? prefs.unit
-  // Se rellena con lo que hiciste la última vez; si es la primera vez, una serie vacía.
-  const sets = last ? last.sets.map(s => ({ ...s, done: false })) : [{ weight: null, reps: null, done: false }]
-  return { exerciseId, unit, sets, previous: last?.sets ?? [] }
+  const unilateral = !!ex?.unilateral
+  const blank = (reps: number | null) => ({ weight: null, reps, ...(unilateral ? { repsR: reps } : {}), done: false })
+  // Se rellena con lo que hiciste la última vez; si es la primera vez, con lo sugerido o una serie vacía.
+  const sets = last ? last.sets.map(s => ({ ...s, done: false }))
+    : suggest ? Array.from({ length: suggest.sets }, () => blank(suggest.reps))
+    : [blank(null)]
+  return { exerciseId, unit, sets, previous: last?.sets ?? [], measure: ex?.measure ?? 'reps', unilateral }
 }
 
-export async function startSession(opts: { routine?: Routine; name: string; description?: string }) {
-  const entries = opts.routine ? await Promise.all(opts.routine.exerciseIds.map(buildEntry)) : []
+export async function startSession(opts: { routine?: Routine; template?: Template; name: string; description?: string }) {
+  const entries = opts.routine ? await Promise.all(opts.routine.exerciseIds.map(id => buildEntry(id)))
+    : opts.template ? await Promise.all(opts.template.items.map(i => buildEntry(i.exerciseId, { sets: i.sets, reps: i.reps })))
+    : []
   const now = Date.now()
   const s: Session = {
     id: uid(), routineId: opts.routine?.id ?? null, isNewRoutine: !opts.routine,
     name: opts.name, description: opts.description, status: 'active',
     startedAt: now, activeMs: 0, resumedAt: now, entries, currentIndex: 0,
+    ...(opts.template ? { templateId: opts.template.id } : {}),
   }
   // Solo una sesión abierta a la vez: las anteriores sin terminar se descartan.
   await db.sessions.where('status').anyOf('active', 'paused').delete()
@@ -116,6 +123,9 @@ export async function addExerciseToSession(sessionId: string, exerciseId: string
   }
   await db.sessions.put(s)
 }
+
+/** Modo «armar rutina ejercicio a ejercicio»: rutina nueva que no viene de una sugerida. */
+export const isBuildMode = (s: Session) => s.isNewRoutine && !s.templateId
 
 export const elapsedMs = (s: Session, now = Date.now()) => s.activeMs + (s.status === 'active' ? now - s.resumedAt : 0)
 
@@ -135,7 +145,8 @@ export function sessionStats(s: Session) {
     const done = e.sets.filter(x => x.done)
     total += e.sets.length; sets += done.length
     if (done.length) exercises++
-    for (const x of done) volumeKg += toKg(x.weight ?? 0, e.unit) * (x.reps ?? 0)
+    // El volumen (peso × repeticiones) no aplica a los isométricos, que se miden en segundos.
+    if (e.measure !== 'time') for (const x of done) volumeKg += toKg(x.weight ?? 0, e.unit) * ((x.reps ?? 0) + (e.unilateral ? x.repsR ?? 0 : 0))
   }
   return { sets, total, exercises, volumeKg: Math.round(volumeKg), duration: elapsedMs(s, s.endedAt ?? Date.now()) }
 }
@@ -171,7 +182,7 @@ export async function previousOfRoutine(routineId: string, beforeId: string) {
   return (await doneSessionsDesc()).find(x => x.routineId === routineId && x.id !== beforeId) ?? null
 }
 
-export async function createCustomExercise(e: Omit<Exercise, 'id' | 'aliases' | 'custom'>) {
+export async function createCustomExercise(e: Omit<Exercise, 'id' | 'aliases' | 'custom' | 'hasPhoto'>) {
   const ex: Exercise = { ...e, id: 'custom-' + uid(), aliases: [], custom: true, createdAt: Date.now() }
   await db.exercises.put(ex)
   return ex

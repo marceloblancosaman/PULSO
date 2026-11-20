@@ -41,6 +41,7 @@ export function SessionDetail() {
   const [del, setDel] = useState(false)
   if (!s || !exs) return <Screen><Header /></Screen>
   const name = (eid: string) => exs.find(e => e.id === eid)?.name ?? 'Ejercicio'
+  const isTime = (eid: string, m?: string) => (m ?? exs.find(e => e.id === eid)?.measure) === 'time'
   const st = sessionStats(s)
   return (
     <Screen>
@@ -52,7 +53,9 @@ export function SessionDetail() {
           {e.sets.map((x, i) => (
             <div key={i} className="row" style={{ justifyContent: 'space-between' }}>
               <span className="label">Serie {i + 1}</span>
-              <span className="title" style={{ fontVariantNumeric: 'tabular-nums' }}>{x.weight !== null ? `${fmtNum(x.weight)} ${e.unit}` : 'Peso corporal'} × {x.reps ?? '—'}</span>
+              <span className="title" style={{ fontVariantNumeric: 'tabular-nums' }}>{isTime(e.exerciseId, e.measure)
+                ? `${x.weight !== null ? `${fmtNum(x.weight)} ${e.unit} · ` : ''}${e.unilateral ? `${x.reps ?? '—'}/${x.repsR ?? '—'}` : x.reps ?? '—'} s`
+                : `${x.weight !== null ? `${fmtNum(x.weight)} ${e.unit}` : 'Peso corporal'} × ${e.unilateral ? `${x.reps ?? '—'}/${x.repsR ?? '—'}` : x.reps ?? '—'}`}</span>
             </div>
           ))}
         </div>
@@ -132,22 +135,23 @@ export function ExerciseProgress() {
   const sessions = useLiveQuery(doneDesc, [])
   const [metric, setMetric] = useState<'peso' | 'volumen'>('peso')
   if (!ex || !sessions) return <Screen><Header /></Screen>
+  const timed = ex.measure === 'time'
   const rows = sessions.flatMap(s => { const e = s.entries.find(x => x.exerciseId === id); return e ? [{ s, e }] : [] }) as { s: Session; e: Session['entries'][number] }[]
   const points = rows.slice(0, 8).reverse().map(({ s, e }) => ({
     label: new Date(s.endedAt!).toLocaleDateString('es-PE', { day: 'numeric', month: 'short' }).replace('.', ''),
-    value: metric === 'peso' ? Math.max(0, ...e.sets.map(x => x.weight ?? 0)) : Math.round(e.sets.reduce((a, x) => a + toKg(x.weight ?? 0, e.unit) * (x.reps ?? 0), 0)),
-    unit: metric === 'peso' ? e.unit : 'kg',
+    value: timed ? Math.max(0, ...e.sets.map(x => Math.max(x.reps ?? 0, x.repsR ?? 0))) : metric === 'peso' ? Math.max(0, ...e.sets.map(x => x.weight ?? 0)) : Math.round(e.sets.reduce((a, x) => a + toKg(x.weight ?? 0, e.unit) * (x.reps ?? 0), 0)),
+    unit: timed ? 's' : metric === 'peso' ? e.unit : 'kg',
   }))
   const max = Math.max(1, ...points.map(p => p.value))
   return (
     <Screen>
       <Header title={ex.name} />
       <div className="body">{ex.muscle} · {ex.equipment} · {rows.length} {rows.length === 1 ? 'sesión registrada' : 'sesiones registradas'}</div>
-      <Segmented surface value={metric} onChange={setMetric} options={[{ value: 'peso', label: 'Peso máximo' }, { value: 'volumen', label: 'Volumen' }]} />
+      {!timed && <Segmented surface value={metric} onChange={setMetric} options={[{ value: 'peso', label: 'Peso máximo' }, { value: 'volumen', label: 'Volumen' }]} />}
       {rows.length < 3 && <div className="card-brand body" style={{ color: 'var(--text-primary)' }}>Registra al menos 3 sesiones de este ejercicio para ver su evolución con claridad.</div>}
       {points.length > 0 && (
         <div className="card stack" style={{ gap: 12 }}>
-          <div className="title" style={{ fontWeight: 600 }}>{metric === 'peso' ? 'Peso máximo por sesión' : 'Volumen por sesión (kg)'}</div>
+          <div className="title" style={{ fontWeight: 600 }}>{timed ? 'Tiempo máximo sostenido (s)' : metric === 'peso' ? 'Peso máximo por sesión' : 'Volumen por sesión (kg)'}</div>
           <div className="bars">
             {points.map((p, i) => (
               <div key={i} className="b"><span className="caption">{fmtNum(p.value)}</span><div className="fill" style={{ height: `${(p.value / max) * 100}%` }} /><span className="caption" style={{ fontWeight: 400, whiteSpace: 'nowrap' }}>{p.label}</span></div>
@@ -156,12 +160,12 @@ export function ExerciseProgress() {
         </div>
       )}
       <div className="card stack" style={{ gap: 10 }}>
-        <div className="row caption"><span style={{ width: 64 }}>FECHA</span><span style={{ width: 72 }}>PESO</span><span>REPETICIONES</span></div>
+        <div className="row caption"><span style={{ width: 64 }}>FECHA</span><span style={{ width: 72 }}>PESO</span><span>{timed ? 'SEGUNDOS' : 'REPETICIONES'}</span></div>
         {rows.map(({ s, e }) => (
           <div key={s.id} className="row label" style={{ color: 'var(--text-primary)', fontWeight: 400 }}>
             <span style={{ width: 64 }}>{new Date(s.endedAt!).toLocaleDateString('es-PE', { day: 'numeric', month: 'short' }).replace('.', '')}</span>
             <span style={{ width: 72 }}>{fmtNum(Math.max(0, ...e.sets.map(x => x.weight ?? 0))) || '—'} {e.unit}</span>
-            <span>{e.sets.map(x => x.reps ?? '—').join(' · ')}</span>
+            <span>{e.sets.map(x => e.unilateral ? `${x.reps ?? '—'}/${x.repsR ?? '—'}` : x.reps ?? '—').join(' · ')}</span>
           </div>
         ))}
       </div>

@@ -13,6 +13,11 @@ export interface Exercise {
   defaultUnit?: Unit
   custom?: boolean
   alternatives?: string[]
+  /** 'time': series en segundos (isométricos). Por defecto, repeticiones. */
+  measure?: 'reps' | 'time'
+  /** Se registra por lado: izquierda y derecha. */
+  unilateral?: boolean
+  hasPhoto?: boolean
   createdAt?: number
 }
 
@@ -28,7 +33,10 @@ export interface Routine {
 
 export interface SetEntry {
   weight: number | null
+  /** Repeticiones, o segundos si el ejercicio es por tiempo. En ejercicios por lado, el lado izquierdo. */
   reps: number | null
+  /** Lado derecho, solo en ejercicios por lado. */
+  repsR?: number | null
   done: boolean
   doneAt?: number
 }
@@ -38,7 +46,9 @@ export interface SessionEntry {
   unit: Unit
   sets: SetEntry[]
   /** Series de la última vez, para mostrar «Anterior». */
-  previous: { weight: number | null; reps: number | null }[]
+  previous: { weight: number | null; reps: number | null; repsR?: number | null }[]
+  measure?: 'reps' | 'time'
+  unilateral?: boolean
 }
 
 export type SessionStatus = 'active' | 'paused' | 'done'
@@ -59,6 +69,10 @@ export interface Session {
   entries: SessionEntry[]
   currentIndex: number
   notes?: string
+  /** Último descanso usado en la sesión, en segundos (recuerda los +30 s). */
+  restSeconds?: number
+  /** Rutina sugerida: se entrena como rutina y se guarda como propia al terminar. */
+  templateId?: string
 }
 
 export interface Pref { key: string; value: unknown }

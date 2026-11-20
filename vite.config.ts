@@ -27,7 +27,10 @@ export default defineConfig({
       },
       workbox: {
         globPatterns: ['**/*.{js,css,html,svg,png,woff,woff2}'],
+        globIgnores: ['ex/**'],
         navigateFallback: '/index.html',
+        // Las fotos de ejercicios se guardan al verlas por primera vez, para no cargar 2 MB al instalar.
+        runtimeCaching: [{ urlPattern: ({ url }) => url.pathname.startsWith('/ex/'), handler: 'CacheFirst', options: { cacheName: 'fotos-ejercicios', expiration: { maxEntries: 300 } } }],
       },
     }),
   ],

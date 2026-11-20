@@ -1,16 +1,20 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useLiveQuery } from 'dexie-react-hooks'
-import { Check, Clock, ChevronRight, ChevronLeft, Delete, Plus, X } from 'lucide-react'
+import { Check, Clock, ChevronRight, ChevronLeft, Delete, Pencil, Play, Plus, X } from 'lucide-react'
 import { db, type Session, type SessionEntry, type Unit } from '../db/db'
-import { bestWeightKg, discardSession, elapsedMs, fmtDuration, fmtNum, getPrefs, pauseSession, resumeSession, toKg } from '../db/logic'
+import { bestWeightKg, discardSession, elapsedMs, fmtDuration, fmtNum, getPrefs, isBuildMode, pauseSession, resumeSession, toKg } from '../db/logic'
 import { Dialog, Segmented, Sheet, Snack, Thumb } from '../ui'
 import { track } from '../analytics'
 
-type Field = 'weight' | 'reps'
+type Field = 'weight' | 'reps' | 'repsR'
 type Editing = { set: number; field: Field; buf: string; fresh: boolean }
 type Rest = { endsAt: number; total: number }
-type SnackState = { title: string; pr?: string; undo: { entries: SessionEntry[]; currentIndex: number } } | null
+type Hold = { set: number; side: 'L' | 'R' | null; startedAt: number; target: number }
+type SnackState =
+  | { kind: 'set'; title: string; pr?: string; undo: { entries: SessionEntry[]; currentIndex: number } }
+  | { kind: 'rest'; left: number; total: number }
+  | null
 
 const clone = <T,>(x: T): T => JSON.parse(JSON.stringify(x))
 const restKey = (id: string) => `pulso-rest-${id}`
@@ -25,9 +29,13 @@ export default function SessionScreen() {
   const [editing, setEditing] = useState<Editing | null>(null)
   const [rest, setRest] = useState<Rest | null>(null)
   const [snack, setSnack] = useState<SnackState>(null)
-  const [sheet, setSheet] = useState<null | 'pause' | 'discard' | 'saved'>(null)
+  const [sheet, setSheet] = useState<null | 'pause' | 'discard' | 'saved' | 'rename'>(null)
+  const [newName, setNewName] = useState('')
+  const [hold, setHold] = useState<Hold | null>(null)
+  const [pendingRight, setPendingRight] = useState<number | null>(null)
+  const finishingHold = useRef(false)
 
-  useEffect(() => { const t = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(t) }, [])
+  useEffect(() => { const t = setInterval(() => setNow(Date.now()), hold ? 250 : 1000); return () => clearInterval(t) }, [hold])
 
   // Al volver a una sesión pausada, se reanuda.
   useEffect(() => { if (session?.status === 'paused') { track('session_resumed'); resumeSession(session.id) } }, [session?.id, session?.status])
@@ -46,14 +54,27 @@ export default function SessionScreen() {
   // Sin ejercicios todavía (rutina nueva): ir a elegir el primero.
   useEffect(() => { if (session && session.entries.length === 0) nav('/ejercicios?modo=sesion', { replace: true }) }, [session, nav])
 
+  // Al cambiar de ejercicio, se cancela un cronómetro de isométrico a medias.
+  useEffect(() => { setHold(null); setPendingRight(null) }, [session?.currentIndex])
+
+  // El cronómetro de un isométrico termina solo al llegar al tiempo objetivo.
+  useEffect(() => {
+    if (hold && now - hold.startedAt >= hold.target * 1000 && !finishingHold.current) finishHold(hold.target)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [now, hold])
+
   if (session === undefined || exercises === undefined) return <div className="screen" />
   if (session === null) { nav('/', { replace: true }); return null }
   if (session.entries.length === 0) return <div className="screen" />
 
   const s: Session = session
+  const build = isBuildMode(s)
   const idx = Math.min(s.currentIndex, s.entries.length - 1)
   const entry = s.entries[idx]
   const ex = exMap.get(entry.exerciseId)
+  const isTime = (entry.measure ?? ex?.measure) === 'time'
+  const uni = !!(entry.unilateral ?? ex?.unilateral)
+  const weightOptional = isTime || ex?.equipment === 'Peso corporal'
   const total = s.entries.reduce((a, e) => a + e.sets.length, 0)
   const doneCount = s.entries.reduce((a, e) => a + e.sets.filter(x => x.done).length, 0)
   const next = s.entries[idx + 1]
@@ -63,35 +84,42 @@ export default function SessionScreen() {
   const updateEntry = (fn: (e: SessionEntry) => void, opts?: { currentIndex?: number }) => {
     const entries = clone(s.entries); fn(entries[idx]); return save(entries, opts?.currentIndex)
   }
+  /** Primer dato que falta para poder registrar la serie, en el orden en que se llenan. */
+  const missing = (st: SessionEntry['sets'][number]): Field | null => {
+    if (st.weight === null && !weightOptional) return 'weight'
+    if (st.reps === null) return 'reps'
+    if (uni && (st.repsR === null || st.repsR === undefined)) return 'repsR'
+    return null
+  }
 
-  async function complete(setIdx: number, values?: Partial<Record<Field, number | null>>, method: 'row_check' | 'keypad' = 'row_check') {
+  async function complete(setIdx: number, values?: Partial<Record<Field, number | null>>, method: 'row_check' | 'keypad' | 'hold' = 'row_check') {
     const before = { entries: clone(s.entries), currentIndex: s.currentIndex }
     const entries = clone(s.entries)
     const e = entries[idx]
     const st = e.sets[setIdx]
     if (values) Object.assign(st, values)
     // Si falta un dato, se abre el teclado en ese campo en vez de registrar una serie incompleta.
-    const bodyweight = ex?.equipment === 'Peso corporal'
-    if (st.weight === null && !bodyweight) { if (values) await save(entries); setEditing({ set: setIdx, field: 'weight', buf: '', fresh: true }); return }
-    if (st.reps === null) { if (values) await save(entries); setEditing({ set: setIdx, field: 'reps', buf: '', fresh: true }); return }
+    const gap = missing(st)
+    if (gap) { if (values) await save(entries); setEditing({ set: setIdx, field: gap, buf: '', fresh: true }); return }
     const wasDone = st.done
     st.done = true; st.doneAt = Date.now()
     // Avance automático en rutinas: al completar la última serie se abre el siguiente ejercicio.
     let currentIndex = s.currentIndex
-    if (!wasDone && !s.isNewRoutine && e.sets.every(x => x.done) && idx < entries.length - 1) currentIndex = idx + 1
+    if (!wasDone && !build && e.sets.every(x => x.done) && idx < entries.length - 1) currentIndex = idx + 1
     await save(entries, currentIndex)
     if (wasDone) return
-    const prefs = await getPrefs()
-    setRest({ endsAt: Date.now() + prefs.restSeconds * 1000, total: prefs.restSeconds })
+    // El descanso arranca con el último tiempo usado en esta sesión (incluidos los +30 s).
+    const restSeconds = s.restSeconds ?? (await getPrefs()).restSeconds
+    setRest({ endsAt: Date.now() + restSeconds * 1000, total: restSeconds })
     let pr: string | undefined
-    if (st.weight) {
+    if (st.weight && !isTime) {
       const best = await bestWeightKg(e.exerciseId, s.id)
       const doneHere = e.sets.filter((x, i) => x.done && i !== setIdx && x.weight).map(x => toKg(x.weight!, e.unit))
       const kg = toKg(st.weight, e.unit)
       if (best > 0 && kg > best && kg > Math.max(0, ...doneHere)) pr = `Nueva marca: ${fmtNum(st.weight)} ${e.unit} × ${st.reps ?? '—'}`
     }
-    track('set_completed', { method, set_index: setIdx + 1, unit: e.unit, is_pr: !!pr, prefilled_from_history: e.previous.length > setIdx, is_new_routine: s.isNewRoutine, exercise: ex?.name })
-    setSnack({ title: `Serie ${setIdx + 1} registrada`, pr, undo: before })
+    track('set_completed', { method, set_index: setIdx + 1, unit: e.unit, is_pr: !!pr, prefilled_from_history: e.previous.length > setIdx, is_new_routine: s.isNewRoutine, from_template: !!s.templateId, measure: isTime ? 'time' : 'reps', unilateral: uni, exercise: ex?.name })
+    setSnack({ kind: 'set', title: `Serie ${setIdx + 1} registrada`, pr, undo: before })
   }
 
   async function uncomplete(setIdx: number) {
@@ -100,12 +128,56 @@ export default function SessionScreen() {
   }
 
   async function undo() {
-    if (!snack) return
+    if (snack?.kind !== 'set') return
     track('set_undone')
     await save(snack.undo.entries, snack.undo.currentIndex)
     setRest(null); setSnack(null)
   }
 
+  /* ---------- Descanso ---------- */
+  function extendRest() {
+    if (!rest) return
+    track('rest_extended')
+    const total = rest.total + 30
+    setRest({ endsAt: rest.endsAt + 30000, total })
+    db.sessions.update(s.id, { restSeconds: total })
+  }
+  function skipRest() {
+    if (!rest) return
+    const left = Math.max(0, rest.endsAt - Date.now())
+    track('rest_skipped', { seconds_left: Math.round(left / 1000) })
+    setRest(null)
+    if (left > 1000) setSnack({ kind: 'rest', left, total: rest.total })
+  }
+  function recoverRest() {
+    if (snack?.kind !== 'rest') return
+    track('rest_recovered', { seconds_left: Math.round(snack.left / 1000) })
+    setRest({ endsAt: Date.now() + snack.left, total: snack.total })
+    setSnack(null)
+  }
+
+  /* ---------- Isométricos: cronómetro para sostener ---------- */
+  function startHold(setIdx: number, side: 'L' | 'R' | null) {
+    const st = entry.sets[setIdx]
+    const target = (side === 'R' ? st.repsR : st.reps) || st.reps || 30
+    finishingHold.current = false
+    setRest(null); setSnack(null)
+    setHold({ set: setIdx, side, startedAt: Date.now(), target })
+    track('hold_started', { side, target })
+  }
+  async function finishHold(seconds?: number) {
+    if (!hold || finishingHold.current) return
+    finishingHold.current = true
+    const secs = Math.max(1, Math.round(seconds ?? (Date.now() - hold.startedAt) / 1000))
+    const h = hold
+    setHold(null)
+    track('hold_finished', { side: h.side, seconds: secs, target: h.target, reached: secs >= h.target })
+    if (h.side === 'L') { await updateEntry(e => { e.sets[h.set].reps = secs }); setPendingRight(h.set); return }
+    setPendingRight(null)
+    await complete(h.set, h.side === 'R' ? { repsR: secs } : { reps: secs }, 'hold')
+  }
+
+  /* ---------- Teclado ---------- */
   function openKeypad(setIdx: number, field: Field) {
     track('keypad_opened', { field, set_done: entry.sets[setIdx].done })
     setEditing({ set: setIdx, field, buf: '', fresh: true })
@@ -117,7 +189,7 @@ export default function SessionScreen() {
       if (!ed) return ed
       let buf = ed.fresh ? '' : ed.buf
       if (k === 'del') buf = buf.slice(0, -1)
-      else if (k === ',') { if (ed.field === 'reps' || buf.includes(',')) return ed; buf = (buf || '0') + ',' }
+      else if (k === ',') { if (ed.field !== 'weight' || buf.includes(',')) return ed; buf = (buf || '0') + ',' }
       else { if (buf.replace(',', '').length >= 5) return ed; buf = buf === '0' ? k : buf + k }
       return { ...ed, buf, fresh: false }
     })
@@ -127,108 +199,163 @@ export default function SessionScreen() {
     if (!editing) return
     const st = entry.sets[editing.set]
     const typed = editing.fresh ? null : editing.buf
-    const value = typed === null ? st[editing.field] : (typed === '' ? null : parseFloat(typed.replace(',', '.')))
+    const value = typed === null ? (st[editing.field] ?? null) : (typed === '' ? null : parseFloat(typed.replace(',', '.')))
     const values = { ...st, [editing.field]: value }
+    const ed = editing
     setEditing(null)
-    if (st.done) { await updateEntry(e => { e.sets[editing.set][editing.field] = value }); return }
-    // Si falta el otro dato, se pasa a él antes de registrar.
-    const other: Field = editing.field === 'weight' ? 'reps' : 'weight'
-    if (values[other] === null && !(other === 'weight' && ex?.equipment === 'Peso corporal')) {
-      await updateEntry(e => { e.sets[editing.set][editing.field] = value })
-      setEditing({ set: editing.set, field: other, buf: '', fresh: true })
+    if (st.done) { await updateEntry(e => { e.sets[ed.set][ed.field] = value }); return }
+    // Si falta otro dato, se pasa a él antes de registrar.
+    const gap = missing(values)
+    if (gap && gap !== ed.field) {
+      await updateEntry(e => { e.sets[ed.set][ed.field] = value })
+      setEditing({ set: ed.set, field: gap, buf: '', fresh: true })
       return
     }
-    await complete(editing.set, { [editing.field]: value }, 'keypad')
+    await complete(ed.set, { [ed.field]: value }, 'keypad')
   }
 
-  const addSet = () => { track('set_added'); return updateEntry(e => { const last = e.sets[e.sets.length - 1]; e.sets.push({ weight: last?.weight ?? null, reps: last?.reps ?? null, done: false }) }) }
+  const addSet = () => { track('set_added'); return updateEntry(e => { const last = e.sets[e.sets.length - 1]; e.sets.push({ weight: last?.weight ?? null, reps: last?.reps ?? null, ...(uni ? { repsR: last?.repsR ?? null } : {}), done: false }) }) }
   const removeLastSet = () => { track('set_removed'); return updateEntry(e => { if (e.sets.length > 1 && !e.sets[e.sets.length - 1].done) e.sets.pop() }) }
   const setUnit = (u: Unit) => { if (u !== entry.unit) track('unit_changed', { to: u, exercise: ex?.name }); return updateEntry(e => { e.unit = u }) }
   const goTo = (i: number) => save(s.entries, i)
 
-  const prevText = (i: number) => { const p = entry.previous[i]; return p ? `${fmtNum(p.weight) || '—'}${p.weight !== null ? ` ${entry.unit}` : ''} × ${p.reps ?? '—'}` : '—' }
+  async function rename() {
+    const name = newName.trim()
+    if (!name) return
+    await db.sessions.update(s.id, { name })
+    if (s.routineId && !s.isNewRoutine) await db.routines.update(s.routineId, { name, updatedAt: Date.now() })
+    track('session_renamed', { is_new_routine: s.isNewRoutine })
+    setSheet(null)
+  }
+
+  const unitLabel = entry.unit === 'kg' ? 'Kg' : 'Lb'
+  const amount = (r: number | null | undefined, rR?: number | null) => {
+    const v = uni ? `${r ?? '—'}/${rR ?? '—'}` : `${r ?? '—'}`
+    return isTime ? `${v} s` : v
+  }
+  const prevText = (i: number) => {
+    const p = entry.previous[i]
+    if (!p) return '—'
+    const w = p.weight !== null && p.weight !== undefined ? `${fmtNum(p.weight)} ${entry.unit}` : ''
+    return isTime ? [w, amount(p.reps, p.repsR)].filter(Boolean).join(' · ') : `${w || '—'} × ${amount(p.reps, p.repsR)}`
+  }
   const shown = (i: number, f: Field) => {
-    if (editing && editing.set === i && editing.field === f) return editing.fresh ? fmtNum(entry.sets[i][f]) : editing.buf
-    return fmtNum(entry.sets[i][f])
+    const v = entry.sets[i][f] ?? null
+    if (editing && editing.set === i && editing.field === f) return editing.fresh ? fmtNum(v) : editing.buf
+    return fmtNum(v)
   }
   const restLeft = rest ? Math.max(0, rest.endsAt - now) : 0
   const entryHasDone = entry.sets.some(x => x.done)
+  const fieldLabel = (f: Field) => f === 'weight' ? `Peso (${entry.unit})${weightOptional ? ' · opcional' : ''}` : isTime ? (uni ? `Segundos · ${f === 'reps' ? 'izquierda' : 'derecha'}` : 'Segundos') : (uni ? `Repeticiones · ${f === 'reps' ? 'izquierda' : 'derecha'}` : 'Repeticiones')
+  const valClass = (i: number, f: Field) => `val ${uni ? 'sm' : ''} ${editing?.set === i && editing.field === f ? 'focus' : ''} ${(entry.sets[i][f] ?? null) === null && !(editing?.set === i && editing.field === f) ? 'empty' : ''}`
+  const holdElapsed = hold ? Math.min(hold.target, (now - hold.startedAt) / 1000) : 0
+  const holdSet = pendingRight ?? currentSet
 
   return (
     <div className="screen" style={{ paddingBottom: editing ? 360 : undefined }}>
       <div className="content tight">
-        {/* Barra superior */}
+        {/* Barra superior: tocar el nombre permite cambiarlo */}
         <div className="row">
           <button className="icon-btn" aria-label="Pausar o salir" onClick={() => setSheet('pause')}><X size={22} /></button>
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <div className="title" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.name}</div>
-            <div className="caption">{s.isNewRoutine ? `Ejercicio ${idx + 1} · rutina nueva` : `Ejercicio ${idx + 1} de ${s.entries.length}`}</div>
-          </div>
+          <button style={{ flex: 1, minWidth: 0, textAlign: 'left' }} aria-label="Cambiar el nombre de la rutina" onClick={() => { setNewName(s.name); setSheet('rename') }}>
+            <div className="title" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', display: 'flex', alignItems: 'center', gap: 6 }}>
+              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{s.name}</span><Pencil size={14} className="muted" style={{ flexShrink: 0 }} />
+            </div>
+            <div className="caption">{build ? `Ejercicio ${idx + 1} · rutina nueva` : `Ejercicio ${idx + 1} de ${s.entries.length}${s.templateId ? ' · rutina sugerida' : ''}`}</div>
+          </button>
           <div className="timer-pill"><Clock size={16} />{fmtDuration(elapsedMs(s, now))}</div>
         </div>
 
-        {!s.isNewRoutine && (
+        {!build && (
           <div className="stack" style={{ gap: 8 }}>
             <div className="progress"><div style={{ width: `${total ? (doneCount / total) * 100 : 0}%` }} /></div>
             <div className="caption">{doneCount} de {total} series completadas</div>
           </div>
         )}
 
-        {rest && (
+        {rest && !hold && (
           <div className="rest">
             <div><div className="overline">Descanso</div><div className="time">{fmtDuration(restLeft)}</div></div>
             <div className="track"><div style={{ width: `${(restLeft / (rest.total * 1000)) * 100}%` }} /></div>
-            <button className="pill pill-outline" onClick={() => { track('rest_extended'); setRest(r => r && { endsAt: r.endsAt + 30000, total: r.total + 30 }) }}>+30 s</button>
-            <button className="pill pill-solid" onClick={() => { track('rest_skipped', { seconds_left: Math.round(restLeft / 1000) }); setRest(null) }}>Saltar</button>
+            <button className="pill pill-outline" onClick={extendRest}>+30 s</button>
+            <button className="pill pill-solid" onClick={skipRest}>Saltar</button>
           </div>
         )}
 
         {/* Ejercicio actual */}
         <div className="row">
-          <button onClick={() => nav(`/ejercicios/${entry.exerciseId}`)} aria-label="Ver ejercicio"><Thumb lg /></button>
-          <div className="h3" style={{ flex: 1, minWidth: 0 }}>{ex?.name ?? 'Ejercicio'}</div>
+          <button onClick={() => nav(`/ejercicios/${entry.exerciseId}`)} aria-label="Ver ejercicio"><Thumb lg ex={ex} /></button>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div className="h3">{ex?.name ?? 'Ejercicio'}</div>
+            {(isTime || uni) && <div className="caption" style={{ fontWeight: 400, marginTop: 2 }}>{[isTime && 'Isométrico · en segundos', uni && 'Por lado: izquierda / derecha'].filter(Boolean).join(' · ')}</div>}
+          </div>
           <Segmented value={entry.unit} onChange={setUnit} options={[{ value: 'kg', label: 'kg' }, { value: 'lb', label: 'lb' }]} />
         </div>
 
-        <div className="cols"><span className="c-n">#</span><span className="c-prev">Anterior</span><span className="c-v">{entry.unit === 'kg' ? 'Kg' : 'Lb'}</span><span className="c-v">Reps</span><span className="c-ck" /></div>
-        <div className="sets">
-          {entry.sets.map((st, i) => {
-            const focus = (f: Field) => editing?.set === i && editing.field === f
-            return (
-              <div key={i} className={`set-row ${st.done ? 'done' : ''} ${i === currentSet && !editing ? 'current' : ''} ${editing?.set === i ? 'current' : ''}`}>
-                <span className="n">{i + 1}</span>
-                <span className="prev">{prevText(i)}</span>
-                <button className={`val ${focus('weight') ? 'focus' : ''} ${st.weight === null && !focus('weight') ? 'empty' : ''}`} onClick={() => openKeypad(i, 'weight')} aria-label={`Peso de la serie ${i + 1}`}>{shown(i, 'weight') || '—'}</button>
-                <button className={`val ${focus('reps') ? 'focus' : ''} ${st.reps === null && !focus('reps') ? 'empty' : ''}`} onClick={() => openKeypad(i, 'reps')} aria-label={`Repeticiones de la serie ${i + 1}`}>{shown(i, 'reps') || '—'}</button>
-                <button className={`check ${st.done ? 'on' : ''}`} aria-label={st.done ? 'Desmarcar serie' : 'Registrar serie'} onClick={() => (st.done ? uncomplete(i) : complete(i))}><Check size={15} strokeWidth={3} /></button>
-              </div>
-            )
-          })}
+        <div className="cols">
+          <span className="c-n">#</span><span className="c-prev">Anterior</span>
+          <span className={`c-v ${uni ? 'sm' : ''}`}>{unitLabel}</span>
+          {uni ? (<><span className="c-v sm">Izq</span><span className="c-v sm">Der</span></>) : <span className="c-v">{isTime ? 'Seg' : 'Reps'}</span>}
+          <span className="c-ck" />
         </div>
+        <div className="sets">
+          {entry.sets.map((st, i) => (
+            <div key={i} className={`set-row ${st.done ? 'done' : ''} ${(i === currentSet && !editing) || editing?.set === i || hold?.set === i ? 'current' : ''}`}>
+              <span className="n">{i + 1}</span>
+              <span className="prev">{prevText(i)}</span>
+              <button className={valClass(i, 'weight')} onClick={() => openKeypad(i, 'weight')} aria-label={`Peso de la serie ${i + 1}`}>{shown(i, 'weight') || '—'}</button>
+              <button className={valClass(i, 'reps')} onClick={() => openKeypad(i, 'reps')} aria-label={`${isTime ? 'Segundos' : 'Repeticiones'}${uni ? ' izquierda' : ''} de la serie ${i + 1}`}>{shown(i, 'reps') || '—'}</button>
+              {uni && <button className={valClass(i, 'repsR')} onClick={() => openKeypad(i, 'repsR')} aria-label={`${isTime ? 'Segundos' : 'Repeticiones'} derecha de la serie ${i + 1}`}>{shown(i, 'repsR') || '—'}</button>}
+              <button className={`check ${st.done ? 'on' : ''}`} aria-label={st.done ? 'Desmarcar serie' : 'Registrar serie'} onClick={() => (st.done ? uncomplete(i) : complete(i))}><Check size={15} strokeWidth={3} /></button>
+            </div>
+          ))}
+        </div>
+
+        {/* Isométricos: cronómetro para sostener la posición */}
+        {isTime && hold && (
+          <div className="card-brand stack" style={{ gap: 10 }}>
+            <div className="row" style={{ justifyContent: 'space-between' }}>
+              <div><div className="overline">Sostén · serie {hold.set + 1}{hold.side ? ` · lado ${hold.side === 'L' ? 'izquierdo' : 'derecho'}` : ''}</div>
+                <div className="h1 brand" style={{ fontVariantNumeric: 'tabular-nums' }}>{Math.floor(holdElapsed)} <span style={{ fontSize: 18 }}>/ {hold.target} s</span></div></div>
+            </div>
+            <div className="rest" style={{ padding: 0, background: 'none' }}><div className="track"><div style={{ width: `${(holdElapsed / hold.target) * 100}%`, transition: 'width .25s linear' }} /></div></div>
+            <div className="btn-row">
+              <button className="btn btn-primary" onClick={() => finishHold()}>Terminar</button>
+              <button className="btn btn-tertiary" style={{ height: 52 }} onClick={() => { setHold(null); track('hold_cancelled') }}>Cancelar</button>
+            </div>
+          </div>
+        )}
+        {isTime && !hold && holdSet >= 0 && (
+          <button className="btn btn-secondary" onClick={() => startHold(holdSet, uni ? (pendingRight !== null ? 'R' : 'L') : null)}>
+            <Play size={18} fill="currentColor" />
+            Sostener serie {holdSet + 1}{uni ? ` · lado ${pendingRight !== null ? 'derecho' : 'izquierdo'}` : ''}
+          </button>
+        )}
+
         <div className="row" style={{ justifyContent: 'space-between' }}>
           <button className="link" onClick={addSet}>+ Añadir serie</button>
           {entry.sets.length > 1 && !entry.sets[entry.sets.length - 1].done && <button className="link muted" style={{ fontWeight: 500, fontSize: 14 }} onClick={removeLastSet}>Quitar serie</button>}
         </div>
 
         {/* Navegación entre ejercicios */}
-        {!s.isNewRoutine && next && (
+        {!build && next && (
           <button className="list-card" style={{ minHeight: 64 }} onClick={() => goTo(idx + 1)}>
             <div className="grow"><div className="overline">Siguiente</div><div className="name" style={{ fontSize: 15 }}>{exMap.get(next.exerciseId)?.name}</div><div className="meta" style={{ fontSize: 12 }}>{next.sets.length} {next.sets.length === 1 ? 'serie' : 'series'}</div></div>
             <ChevronRight size={20} className="muted" />
           </button>
         )}
-        {(idx > 0 || !s.isNewRoutine) && (
+        {(idx > 0 || !build) && (
           <div className="row" style={{ justifyContent: 'space-between' }}>
             {idx > 0 ? <button className="link muted" style={{ fontWeight: 500, fontSize: 14, display: 'flex', alignItems: 'center', gap: 4 }} onClick={() => goTo(idx - 1)}><ChevronLeft size={16} />Ejercicio anterior</button> : <span />}
-            {!s.isNewRoutine && <button className="link" style={{ fontSize: 14, display: 'flex', alignItems: 'center', gap: 4 }} onClick={() => nav('/ejercicios?modo=sesion')}><Plus size={16} />Añadir ejercicio</button>}
+            {!build && <button className="link" style={{ fontSize: 14, display: 'flex', alignItems: 'center', gap: 4 }} onClick={() => nav('/ejercicios?modo=sesion')}><Plus size={16} />Añadir ejercicio</button>}
           </div>
         )}
 
         <div className="spacer" />
-        {s.isNewRoutine
+        {build
           ? <button className="btn btn-primary" disabled={!entryHasDone} onClick={() => { track('exercise_saved', { exercise: ex?.name, sets: entry.sets.filter(x => x.done).length }); setSheet('saved') }}>Guardar ejercicio</button>
           : <button className="btn btn-secondary" onClick={() => nav('/sesion/terminar')}>Finalizar entrenamiento</button>}
-        {s.isNewRoutine && !entryHasDone && <div className="caption" style={{ textAlign: 'center' }}>Registra al menos una serie para guardarlo.</div>}
+        {build && !entryHasDone && <div className="caption" style={{ textAlign: 'center' }}>Registra al menos una serie para guardarlo.</div>}
       </div>
 
       {/* Teclado numérico */}
@@ -236,12 +363,12 @@ export default function SessionScreen() {
         <div style={{ position: 'fixed', inset: 0, zIndex: 34 }} onClick={() => setEditing(null)} />
         <div className="keypad">
           <div className="bar">
-            <div className="grow"><div className="title" style={{ fontWeight: 600 }}>Serie {editing.set + 1} · {editing.field === 'weight' ? `Peso (${entry.unit})` : 'Repeticiones'}</div></div>
+            <div className="grow"><div className="title" style={{ fontWeight: 600 }}>Serie {editing.set + 1} · {fieldLabel(editing.field)}</div></div>
             <button className="ok" aria-label="Confirmar" onClick={confirmKeypad}><Check size={24} strokeWidth={3} /></button>
           </div>
           <div className="keys">
             {['1', '2', '3', '4', '5', '6', '7', '8', '9', ',', '0', 'del'].map(k => (
-              <button key={k} className="key" onClick={() => press(k)} aria-label={k === 'del' ? 'Borrar' : k} style={k === ',' && editing.field === 'reps' ? { opacity: 0.3 } : undefined}>
+              <button key={k} className="key" onClick={() => press(k)} aria-label={k === 'del' ? 'Borrar' : k} style={k === ',' && editing.field !== 'weight' ? { opacity: 0.3 } : undefined}>
                 {k === 'del' ? <Delete size={24} /> : k}
               </button>
             ))}
@@ -249,13 +376,25 @@ export default function SessionScreen() {
         </div>
       </>)}
 
-      {snack && !editing && (
+      {snack?.kind === 'set' && !editing && (
         <Snack raised action="Deshacer" onAction={undo} onTimeout={() => setSnack(null)} ms={5000}>
           <div style={{ fontWeight: 600, fontSize: 14 }}>{snack.title}</div>
           {snack.pr && <div className="brand" style={{ fontSize: 12, marginTop: 2 }}>{snack.pr}</div>}
         </Snack>
       )}
+      {snack?.kind === 'rest' && !editing && (
+        <Snack raised action="Recuperar" onAction={recoverRest} onTimeout={() => setSnack(null)} ms={5000}>
+          <div style={{ fontWeight: 600, fontSize: 14 }}>Descanso saltado</div>
+          <div className="muted" style={{ fontSize: 12, marginTop: 2 }}>Quedaban {fmtDuration(snack.left)}</div>
+        </Snack>
+      )}
 
+      {sheet === 'rename' && (
+        <Dialog title="Nombre de la rutina" body={s.isNewRoutine ? 'Así la encontrarás para repetirla.' : 'El cambio se aplica a la rutina guardada.'} onClose={() => setSheet(null)}>
+          <input className="input" value={newName} onChange={e => setNewName(e.target.value)} onFocus={e => e.target.select()} autoFocus />
+          <button className="btn btn-primary" disabled={!newName.trim()} onClick={rename}>Guardar</button>
+        </Dialog>
+      )}
       {sheet === 'pause' && (
         <Sheet onClose={() => setSheet(null)}>
           <div className="h3">¿Pausar o salir del entrenamiento?</div>

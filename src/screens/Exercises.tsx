@@ -61,8 +61,8 @@ export function ExercisePicker() {
         <div className="stack" style={{ gap: 8 }}>
           {list.map(e => (
             <button key={e.id} className="list-card" onClick={() => pick(e.id)}>
-              <Thumb />
-              <div className="grow"><div className="name">{e.name}</div><div className="meta">{e.muscle} · {e.equipment}{e.custom ? ' · Propio' : ''}</div></div>
+              <Thumb ex={e} />
+              <div className="grow"><div className="name">{e.name}</div><div className="meta">{e.muscle} · {e.equipment}{e.measure === 'time' ? ' · Isométrico' : ''}{e.unilateral ? ' · Por lado' : ''}{e.custom ? ' · Propio' : ''}</div></div>
               {forSession ? (inSession.has(e.id) ? <span className="badge">En la sesión</span> : <span className="icon-btn" style={{ width: 36, height: 36 }}><Plus size={18} /></span>) : <ChevronRight size={20} className="muted" />}
             </button>
           ))}
@@ -84,9 +84,14 @@ export function ExerciseDetail() {
   return (
     <Screen>
       <Header title="Ejercicio" />
-      <div className="card-brand" style={{ height: 140, display: 'flex', alignItems: 'center', justifyContent: 'center' }}><Thumb lg /></div>
+      {ex.hasPhoto ? (
+        <div className="stack" style={{ gap: 6 }}>
+          <div className="photos"><img src={`/ex/${ex.id}-0.webp`} alt={`${ex.name}: posición inicial`} /><img src={`/ex/${ex.id}-1.webp`} alt={`${ex.name}: posición final`} /></div>
+          <div className="credit">Inicio y final del movimiento · Fotos: Free Exercise DB (dominio público)</div>
+        </div>
+      ) : <div className="card-brand" style={{ height: 140, display: 'flex', alignItems: 'center', justifyContent: 'center' }}><Thumb lg /></div>}
       <div className="h2">{ex.name}</div>
-      <div className="chips wrap"><span className="chip">{ex.muscle}</span><span className="chip">{ex.equipment}</span>{ex.custom && <span className="chip on">Propio</span>}</div>
+      <div className="chips wrap"><span className="chip">{ex.muscle}</span><span className="chip">{ex.equipment}</span>{ex.measure === 'time' && <span className="chip on">Isométrico · segundos</span>}{ex.unilateral && <span className="chip on">Por lado</span>}{ex.custom && <span className="chip on">Propio</span>}</div>
       {ex.aliases.length > 0 && <div><div className="label">También se conoce como</div><div className="body" style={{ marginTop: 4 }}>{ex.aliases.join(', ')}</div></div>}
       {alts && alts.length > 0 && (
         <div className="stack" style={{ gap: 8 }}>
@@ -110,14 +115,16 @@ export function CreateExercise() {
   const [muscle, setMuscle] = useState<Muscle | null>(null)
   const [equipment, setEquipment] = useState<Equipment | null>(null)
   const [unit, setUnit] = useState<Unit | null>(null)
+  const [byTime, setByTime] = useState(false)
+  const [perSide, setPerSide] = useState(false)
   const prefs = useLiveQuery(getPrefs, [])
   const u = unit ?? prefs?.unit ?? 'kg'
   const valid = name.trim().length >= 2 && muscle && equipment
 
   async function saveIt() {
     if (!valid) return
-    const ex = await createCustomExercise({ name: name.trim(), muscle: muscle!, equipment: equipment!, defaultUnit: u })
-    track('custom_exercise_created', { name: ex.name, muscle: ex.muscle, equipment: ex.equipment, unit: u, during_session: forSession })
+    const ex = await createCustomExercise({ name: name.trim(), muscle: muscle!, equipment: equipment!, defaultUnit: u, ...(byTime ? { measure: 'time' as const } : {}), ...(perSide ? { unilateral: true } : {}) })
+    track('custom_exercise_created', { name: ex.name, muscle: ex.muscle, equipment: ex.equipment, unit: u, during_session: forSession, by_time: byTime, per_side: perSide })
     const s = await openSession()
     if (forSession && s) { await addExerciseToSession(s.id, ex.id); nav('/sesion', { replace: true }) }
     else nav(`/ejercicios/${ex.id}`, { replace: true })
@@ -136,6 +143,14 @@ export function CreateExercise() {
       </div>
       <div className="field"><label>Equipo</label>
         <div className="chips wrap">{EQUIPMENT.map(m => <button key={m} className={`chip ${equipment === m ? 'on' : ''}`} onClick={() => setEquipment(m)}>{equipment === m && <Check size={16} />}{m}</button>)}</div>
+      </div>
+      <div className="row">
+        <div style={{ flex: 1 }}><div className="title">¿Cómo se mide?</div><div className="caption" style={{ fontWeight: 400 }}>Segundos para isométricos</div></div>
+        <Segmented surface value={byTime ? 'time' : 'reps'} onChange={v => setByTime(v === 'time')} options={[{ value: 'reps', label: 'Reps' }, { value: 'time', label: 'Segundos' }]} />
+      </div>
+      <div className="row">
+        <div style={{ flex: 1 }}><div className="title">¿Se hace por lado?</div><div className="caption" style={{ fontWeight: 400 }}>Una pierna o un brazo a la vez</div></div>
+        <Segmented surface value={perSide ? 'si' : 'no'} onChange={v => setPerSide(v === 'si')} options={[{ value: 'no', label: 'No' }, { value: 'si', label: 'Sí' }]} />
       </div>
       <div className="row">
         <div style={{ flex: 1 }}><div className="title">Unidad de esta máquina</div><div className="caption" style={{ fontWeight: 400 }}>Podrás cambiarla al entrenar</div></div>

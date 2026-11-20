@@ -4,7 +4,7 @@ import { ensureSeed, getPrefs } from './db/logic'
 import SessionScreen from './screens/Session'
 import { CreateExercise, ExerciseDetail, ExercisePicker } from './screens/Exercises'
 import { FinishWorkout, NewWorkout, WorkoutDone } from './screens/Workout'
-import { Home, RoutineDetail, Routines, Train } from './screens/Main'
+import { Home, RoutineDetail, Routines, TemplateDetail, Train } from './screens/Main'
 import { ExerciseProgress, HistoryList, Progress, SessionDetail } from './screens/History'
 import { Install, Preferences, Profile, Welcome } from './screens/Profile'
 
@@ -14,6 +14,7 @@ const isMobile = () => /android|iphone|ipad|ipod/i.test(navigator.userAgent)
 /** Primer arranque: instalar (si se abre en el navegador del teléfono) y luego el nombre. */
 function Gate({ children }: { children: React.ReactNode }) {
   const loc = useLocation()
+  useEffect(() => { document.getElementById('root')?.scrollTo(0, 0) }, [loc.pathname])
   const [state, setState] = useState<null | { path: string; needsName: boolean; needsInstall: boolean }>(null)
   useEffect(() => {
     const path = loc.pathname
@@ -44,6 +45,7 @@ export default function App() {
           <Route path="/rutinas" element={<Routines />} />
           <Route path="/rutinas/:id" element={<RoutineDetail />} />
           <Route path="/entrenar" element={<Train />} />
+          <Route path="/sugeridas/:id" element={<TemplateDetail />} />
           <Route path="/nuevo" element={<NewWorkout />} />
           <Route path="/ejercicios" element={<ExercisePicker />} />
           <Route path="/ejercicios/nuevo" element={<CreateExercise />} />

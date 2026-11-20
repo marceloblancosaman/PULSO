@@ -1,4 +1,4 @@
-import { type ReactNode, useEffect } from 'react'
+import { type ReactNode, useEffect, useState } from 'react'
 import { NavLink, useNavigate } from 'react-router-dom'
 import { ChevronLeft, Dumbbell, House, ClipboardList, Play, ChartLine, User, X } from 'lucide-react'
 
@@ -81,7 +81,10 @@ export function Segmented<T extends string>({ value, options, onChange, full, su
   )
 }
 
-export function Thumb({ lg }: { lg?: boolean }) {
+/** Foto del ejercicio (Free Exercise DB) o, si no hay o no carga, el ícono de mancuerna. */
+export function Thumb({ lg, ex }: { lg?: boolean; ex?: { id: string; hasPhoto?: boolean } }) {
+  const [failed, setFailed] = useState(false)
+  if (ex?.hasPhoto && !failed) return <div className={`thumb photo ${lg ? 'lg' : ''}`}><img src={`/ex/${ex.id}-0.webp`} alt="" loading="lazy" onError={() => setFailed(true)} /></div>
   return <div className={`thumb ${lg ? 'lg' : ''}`}><Dumbbell size={lg ? 28 : 24} /></div>
 }
 
