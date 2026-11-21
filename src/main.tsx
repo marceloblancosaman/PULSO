@@ -30,6 +30,17 @@ window.addEventListener('beforeinstallprompt', e => {
 
 initAnalytics()
 
+// iPhone con la app instalada: usar el alto real de la pantalla (Safari a veces da uno menor).
+const isIOS = /iphone|ipod/i.test(navigator.userAgent)
+const standalone = (navigator as Navigator & { standalone?: boolean }).standalone === true || matchMedia('(display-mode: standalone)').matches
+if (isIOS && standalone) {
+  const fit = () => {
+    const h = Math.max(window.innerHeight, Math.round(screen.height))
+    document.documentElement.style.setProperty('--app-h', `${h}px`)
+  }
+  fit(); window.addEventListener('resize', fit); window.addEventListener('orientationchange', fit)
+}
+
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <App />
