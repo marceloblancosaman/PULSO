@@ -32,17 +32,15 @@
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
 html, body, #root { height: 100%; }
+#root { position: relative; }
 /* La página no se mueve; se desplaza (con su rebote natural) solo la zona de contenido. */
-html, body { position: fixed; top: 0; left: 0; right: 0; height: var(--app-h, 100%); overflow: hidden; overscroll-behavior: none; }
-/* iPhone instalado: Safari calcula la pantalla más baja de lo que es y deja una franja vacía abajo.
-   La app mide el alto real (--app-h, en main.tsx) y el body pasa a ser la referencia de todo lo
-   «fijo» (barra, hojas, avisos), así quedan pegados al borde real de la pantalla. */
-body { transform: translateZ(0); }
+/* Sin contenedores fijos del tamaño de la pantalla: en iPhone instalado provocan una franja vacía abajo. */
+html, body { height: 100%; overflow: hidden; overscroll-behavior: none; }
 body { background: var(--bg-app); }
 #root, .shell-scroll { overflow-y: auto; overscroll-behavior-y: auto; -webkit-overflow-scrolling: touch; }
 /* 1 px extra: la pantalla siempre puede rebotar, aunque tenga poco contenido. */
 #root > .screen, .shell-scroll > .screen { min-height: calc(100% + 1px); }
-.shell { position: fixed; inset: 0; }
+.shell { position: absolute; inset: 0; }
 .shell-scroll { height: 100%; }
 button { font: inherit; color: inherit; background: none; border: 0; cursor: pointer; }
 input, textarea { font: inherit; color: inherit; }
@@ -168,7 +166,7 @@ textarea.input { height: 96px; padding: 14px 16px; resize: none; }
 .nav {
   /* Píldora flotante con efecto glass: fija sobre el contenido, que pasa por detrás al desplazar. */
   position: absolute; left: 50%; transform: translateX(-50%);
-  bottom: max(20px, calc(var(--safe-bottom) - 8px));
+  bottom: var(--nav-bottom, max(20px, calc(var(--safe-bottom) - 8px)));
   width: calc(100% - 24px); max-width: 456px; height: 72px; border-radius: 32px;
   background: rgba(31, 41, 43, 0.42);
   -webkit-backdrop-filter: blur(22px) saturate(170%); backdrop-filter: blur(22px) saturate(170%);
