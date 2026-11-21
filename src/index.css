@@ -38,8 +38,8 @@ body { background: var(--bg-app); }
 #root, .shell-scroll { overflow-y: auto; overscroll-behavior-y: auto; -webkit-overflow-scrolling: touch; }
 /* 1 px extra: la pantalla siempre puede rebotar, aunque tenga poco contenido. */
 #root > .screen, .shell-scroll > .screen { min-height: calc(100% + 1px); }
-.shell { position: fixed; inset: 0; display: flex; flex-direction: column; }
-.shell-scroll { flex: 1; min-height: 0; }
+.shell { position: fixed; inset: 0; }
+.shell-scroll { height: 100%; }
 button { font: inherit; color: inherit; background: none; border: 0; cursor: pointer; }
 input, textarea { font: inherit; color: inherit; }
 svg { flex-shrink: 0; }
@@ -56,7 +56,7 @@ svg { flex-shrink: 0; }
   padding: calc(var(--safe-top) + 31px) 20px calc(var(--safe-bottom) + 20px);
   max-width: 480px; margin: 0 auto; width: 100%;
 }
-.screen.with-nav { padding-bottom: 32px; }
+.screen.with-nav { padding-bottom: calc(var(--safe-bottom) + 104px); }
 .content { display: flex; flex-direction: column; gap: 16px; flex: 1; }
 .content.tight { gap: 12px; }
 .spacer { flex: 1; }
@@ -162,17 +162,21 @@ textarea.input { height: 96px; padding: 14px 16px; resize: none; }
 
 /* ===== Barra de navegación inferior ===== */
 .nav {
-  /* Anclada al borde inferior, de lado a lado, con fondo sólido hasta el borde (sin hueco debajo). */
-  position: relative; flex-shrink: 0; width: 100%;
-  background: #0d1314; border-top: 1px solid var(--border);
-  display: flex; align-items: center; justify-content: space-around;
-  height: calc(var(--safe-bottom) + 68px); padding: 0 max(8px, calc((100% - 480px) / 2)) var(--safe-bottom); z-index: 20;
+  /* Píldora flotante con efecto glass: fija sobre el contenido, que pasa por detrás al desplazar. */
+  position: absolute; left: 50%; transform: translateX(-50%);
+  bottom: max(12px, calc(var(--safe-bottom) - 8px));
+  width: calc(100% - 24px); max-width: 456px; height: 72px; border-radius: 32px;
+  background: rgba(31, 41, 43, 0.42);
+  -webkit-backdrop-filter: blur(22px) saturate(170%); backdrop-filter: blur(22px) saturate(170%);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.10);
+  display: flex; align-items: center; justify-content: space-around; padding: 0 8px; z-index: 20;
 }
 .nav a { display: flex; flex-direction: column; align-items: center; gap: 4px; font-size: 11px; font-weight: 500; color: var(--text-secondary); text-decoration: none; padding: 6px 10px; border-radius: 16px; min-width: 56px; }
 .nav a.active { color: var(--brand); }
 .nav a.active .nav-ic { background: var(--bg-brand-soft); }
 .nav .nav-ic { width: 44px; height: 28px; border-radius: 14px; display: flex; align-items: center; justify-content: center; }
-.nav a.cta .nav-ic { width: 52px; height: 52px; border-radius: 50%; background: var(--gradient-brand); color: var(--text-on-brand); box-shadow: var(--glow-brand); margin-top: -18px; }
+.nav a.cta .nav-ic { width: 52px; height: 52px; border-radius: 50%; background: var(--gradient-brand); color: var(--text-on-brand); box-shadow: var(--glow-brand); margin-top: -20px; }
 .nav a.cta { color: var(--brand); }
 
 /* ===== Hojas, diálogos y avisos ===== */

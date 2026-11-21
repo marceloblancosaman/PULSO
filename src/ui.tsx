@@ -9,7 +9,7 @@ export function Screen({ children, nav, className = '' }: { children: ReactNode;
     </div>
   )
   if (!nav) return screen
-  // Con menú: el contenido se desplaza (y rebota) en su propia zona; la barra va debajo, anclada al borde, sin tapar nada.
+  // Con menú: el contenido se desplaza (y rebota) en su zona y pasa por detrás de la barra flotante, que no se mueve.
   return (
     <div className="shell">
       <div className="shell-scroll">{screen}</div>
