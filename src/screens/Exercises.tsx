@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
+import { useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { Check, ChevronRight, Plus, Search, SearchX } from 'lucide-react'
 import { db, type Equipment, type Muscle, type Unit } from '../db/db'
@@ -17,8 +17,16 @@ export function ExercisePicker() {
   const forSession = params.get('modo') === 'sesion'
   const all = useLiveQuery(() => db.exercises.toArray(), [])
   const session = useLiveQuery(openSession, [])
-  const [q, setQ] = useState('')
-  const [muscle, setMuscle] = useState<Muscle | 'Todos' | 'Propios'>('Todos')
+  // Al volver del detalle de un ejercicio se recuperan la búsqueda, el filtro y la posición.
+  const loc = useLocation()
+  const saved = loc.state as { q?: string; muscle?: Muscle | 'Todos' | 'Propios'; scroll?: number } | null
+  const [q, setQ] = useState(saved?.q ?? '')
+  const [muscle, setMuscle] = useState<Muscle | 'Todos' | 'Propios'>(saved?.muscle ?? 'Todos')
+  useEffect(() => {
+    if (!saved?.scroll || !all) return
+    const t = setTimeout(() => document.getElementById('root')?.scrollTo(0, saved.scroll!), 30)
+    return () => clearTimeout(t)
+  }, [!!all]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const list = useMemo(() => {
     let l = all ?? []
@@ -35,7 +43,10 @@ export function ExercisePicker() {
     if (forSession && session) {
       track('exercise_added', { source: 'catalog', used_search: !!q.trim(), filter: muscle, custom: !!all?.find(e => e.id === id)?.custom })
       await addExerciseToSession(session.id, id); nav('/sesion', { replace: true }) }
-    else nav(`/ejercicios/${id}`)
+    else {
+      nav(loc.pathname + loc.search, { replace: true, state: { q, muscle, scroll: document.getElementById('root')?.scrollTop ?? 0 } })
+      nav(`/ejercicios/${id}`)
+    }
   }
   const createHref = `/ejercicios/nuevo?${forSession ? 'modo=sesion&' : ''}nombre=${encodeURIComponent(q)}`
 

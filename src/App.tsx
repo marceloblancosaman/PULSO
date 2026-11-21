@@ -14,7 +14,7 @@ const isMobile = () => /android|iphone|ipad|ipod/i.test(navigator.userAgent)
 /** Primer arranque: instalar (si se abre en el navegador del teléfono) y luego el nombre. */
 function Gate({ children }: { children: React.ReactNode }) {
   const loc = useLocation()
-  useEffect(() => { document.getElementById('root')?.scrollTo(0, 0) }, [loc.pathname])
+  useEffect(() => { document.getElementById('root')?.scrollTo(0, 0); document.querySelector('.shell-scroll')?.scrollTo(0, 0) }, [loc.pathname])
   const [state, setState] = useState<null | { path: string; needsName: boolean; needsInstall: boolean }>(null)
   useEffect(() => {
     const path = loc.pathname

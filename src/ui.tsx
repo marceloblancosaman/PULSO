@@ -3,10 +3,17 @@ import { NavLink, useNavigate } from 'react-router-dom'
 import { ChevronLeft, Dumbbell, House, ClipboardList, Play, ChartLine, User, X } from 'lucide-react'
 
 export function Screen({ children, nav, className = '' }: { children: ReactNode; nav?: boolean; className?: string }) {
-  return (
+  const screen = (
     <div className={`screen ${nav ? 'with-nav' : ''} ${className}`}>
       <div className="content">{children}</div>
-      {nav && <BottomNav />}
+    </div>
+  )
+  if (!nav) return screen
+  // Con menú: el contenido se desplaza (y rebota) en su propia zona; la barra va debajo, anclada al borde, sin tapar nada.
+  return (
+    <div className="shell">
+      <div className="shell-scroll">{screen}</div>
+      <BottomNav />
     </div>
   )
 }
